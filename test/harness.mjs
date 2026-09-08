@@ -73,9 +73,9 @@ function runPolicyTests() {
   console.log("policy tests ok");
 }
 
-async function runGrepToolTests() {
+async function runGrepToolTests(repoDir) {
   const tool = createGrepToolOverride(pi);
-  const ctx = { cwd: FIXTURE, ui: {} };
+  const ctx = { cwd: repoDir, ui: {} };
   const signal = undefined;
 
   const plain = await tool.execute("t1", { pattern: "needle" }, signal, undefined, ctx);
@@ -109,9 +109,7 @@ async function runGrepToolTests() {
   console.log("grep tool tests ok");
 }
 
-async function runServerManagerTests() {
-  const workDir = await mkdtemp(path.join(tmpdir(), "pi-tgrep-e2e-"));
-  await cp(FIXTURE, workDir, { recursive: true });
+async function runServerManagerTests(workDir) {
   const manager = new ServerManager(pi, {
     disabled: false,
     autoInstall: "never",
@@ -144,11 +142,17 @@ async function runServerManagerTests() {
   const after = await status(pi, root);
   assert.equal(after.kind, "index", `expected index-only after stop, got ${JSON.stringify(after)}`);
 
-  await rm(workDir, { recursive: true, force: true });
   console.log("server manager tests ok");
 }
 
-runPolicyTests();
-await runGrepToolTests();
-await runServerManagerTests();
+const repoDir = await mkdtemp(path.join(tmpdir(), "pi-tgrep-fixture-"));
+await cp(FIXTURE, repoDir, { recursive: true });
+await execFileP("git", ["init"], { cwd: repoDir });
+try {
+  runPolicyTests();
+  await runGrepToolTests(repoDir);
+  await runServerManagerTests(repoDir);
+} finally {
+  await rm(repoDir, { recursive: true, force: true });
+}
 console.log("ALL HARNESS TESTS PASSED");
