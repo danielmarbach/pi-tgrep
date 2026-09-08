@@ -1,0 +1,23 @@
+{
+  "name": "pi-tgrep",
+  "version": "0.1.0",
+  "description": "tgrep-backed code search for pi: auto-indexes the repo and routes all grep traffic through the trigram index",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2"
+  }
+}
