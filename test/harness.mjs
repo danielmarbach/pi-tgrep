@@ -43,14 +43,29 @@ function policyCase(command, mode, expect) {
 
 function runPolicyTests() {
   policyCase("rg -n needle src/", "translate", { action: "rewrite", command: "tgrep -n needle src/" });
-  policyCase("rg -n 'foo|bar' .", "translate", { action: "block" });
-  policyCase("rg -g '*.ts' needle src/", "translate", { action: "block" });
-  policyCase('rg -n "two words" .', "translate", { action: "block" });
+  policyCase("rg -n 'foo|bar' .", "translate", { action: "rewrite", command: "tgrep -n 'foo|bar' ." });
+  policyCase("rg -g '*.ts' needle src/", "translate", { action: "rewrite", command: "tgrep -g '*.ts' needle src/" });
+  policyCase('rg -n "two words" .', "translate", { action: "rewrite", command: "tgrep -n 'two words' ." });
+  policyCase('grep -rl "IBehavior<" src --include="*.cs" | head -50', "translate", {
+    action: "rewrite",
+    command: "tgrep -l -g '*.cs' 'IBehavior<' src | head -50",
+  });
+  policyCase("tgrep -l 'IBehavior<' src 2>/dev/null | grep -v '\\.Tests' | sort", "translate", {
+    action: "allow",
+  });
+  policyCase("cat f | grep needle", "translate", { action: "allow" });
+  policyCase("grep needle file.txt | wc -l", "translate", {
+    action: "rewrite",
+    command: "tgrep needle file.txt | wc -l",
+  });
+  policyCase("rg foo . > out.txt", "translate", { action: "rewrite", command: "tgrep foo . > out.txt" });
+  policyCase("grep foo .; rm x", "translate", { action: "block" });
+  policyCase("echo $(rg foo .)", "translate", { action: "block" });
+  policyCase("grep foo < in.txt", "translate", { action: "block" });
   policyCase("grep -rn --include=*.ts needle .", "translate", {
     action: "rewrite",
-    command: "tgrep -n -g *.ts needle .",
+    command: "tgrep -n -g '*.ts' needle .",
   });
-  policyCase("cat f | grep needle", "translate", { action: "block" });
   policyCase("zgrep needle x.log", "translate", { action: "allow" });
   policyCase("git log --grep needle", "translate", { action: "allow" });
   policyCase("grep 'a\\(b\\)' f", "translate", { action: "block" });
@@ -66,10 +81,10 @@ function runPolicyTests() {
   policyCase("ag -l needle", "translate", { action: "block" });
   policyCase("grep --exclude-dir=node_modules -r needle .", "translate", {
     action: "rewrite",
-    command: "tgrep -g !node_modules/** needle .",
+    command: "tgrep -g '!node_modules/**' needle .",
   });
-  policyCase("fgrep -n 'a.b' .", "translate", { action: "block" });
-  policyCase("egrep 'ab+c' .", "translate", { action: "block" });
+  policyCase("fgrep -n 'a.b' .", "translate", { action: "rewrite", command: "tgrep -F -n a.b ." });
+  policyCase("egrep 'ab+c' .", "translate", { action: "rewrite", command: "tgrep ab+c ." });
   console.log("policy tests ok");
 }
 

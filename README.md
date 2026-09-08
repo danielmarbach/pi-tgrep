@@ -24,11 +24,16 @@ path into the fast one and closes the side doors.
    (`pattern`, `path`, `glob`, `ignoreCase`, `literal`, `context`, `limit`) and identical
    output contract. The model calls `grep` like always; the results come from the trigram
    index. Every result carries `details.engine` for provenance.
-3. **Guards the shell** — a `tool_call` hook inspects `bash` invocations:
-   - single `rg`/`grep`/`egrep`/`fgrep` commands are transparently rewritten to `tgrep`
-     (`sudo`/`env` prefixes preserved, GNU flags translated);
-   - pipes, redirects, `$()`, unknown flags, and BRE-only patterns are blocked with a reason
-     that redirects the model to the `grep` tool;
+3. **Guards the shell** — a `tool_call` hook inspects `bash` invocations, pipeline-aware:
+   - commands are split on top-level `|`; each segment is judged on its primary binary;
+   - grep/`rg` scan segments (pattern + path present) are transparently translated to `tgrep`
+     with quote-preserving re-emission (`'foo|bar'` stays quoted, translated globs are always
+     quoted, `sudo`/`env` prefixes survive);
+   - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim — no tree scan, no block;
+   - output redirects (`2>/dev/null`, `>file`, `2>&1`) are preserved;
+   - `;`, `&&`, `||`, background `&`, backticks, `$()`, and stdin redirects (`<`) are blocked;
+   - unknown flags, BRE-only patterns, and `ag`/`ack`/`pt` are blocked with a reason that
+     redirects the model to the `grep` tool;
    - `zgrep`, `git log --grep`, and filenames containing "grep" are never touched.
 4. **Degrades gracefully** — no tgrep binary → fully dormant (built-in grep untouched, with a
    one-time offer to `brew install tgrep`). Index still building → falls back to ripgrep so
@@ -65,7 +70,7 @@ All configuration is via environment variables.
 |---|---|---|
 | `PI_TGREP_DISABLED` | – | `1` disables the extension entirely |
 | `PI_TGREP_AUTO_INSTALL` | `ask` | `ask` \| `never` \| `always` — brew install when tgrep is missing; `ask` prompts once and remembers (`~/.cache/pi-tgrep/auto-install.json`) |
-| `PI_TGREP_BASH_POLICY` | `translate` | `translate` (rewrite simple commands, block the rest) \| `block` (block all grep-family shell use) \| `warn` (allow, notify) \| `off` |
+| `PI_TGREP_BASH_POLICY` | `translate` | `translate` (translate scan segments in pipelines, block the rest) \| `block` (block all grep-family shell use) \| `warn` (allow, notify) \| `off` |
 | `PI_TGREP_SERVE_ARGS` | – | extra args passed to `tgrep serve` (e.g. `"--exclude vendor --no-watch"`); split on whitespace — quotes are not parsed, so individual args cannot contain spaces |
 | `PI_TGREP_INDEX_PATH` | tgrep default (`<repo>/.tgrep`) | forwarded as `--index-path` |
 | `PI_TGREP_SCOPE` | `repo` | `repo` keeps the server after the session ends; `session` stops servers this session started on shutdown |
@@ -92,8 +97,9 @@ src/server-manager.ts repo-root detection, detached `tgrep serve` spawn, .git/in
 src/grep-tool.ts      the grep override: TypeBox schema identical to the built-in, tgrep
                       --json streaming (ripgrep event schema, parsed 1:1), built-in truncation
                       rules via pi's own helpers, abort handling, rg fallback while indexing
-src/bash-policy.ts    shell detection (quote-aware), rg→tgrep pass-through, grep→tgrep flag
-                      translator, conservative block-with-guidance ladder
+src/bash-policy.ts    shell detection (quote-aware), pipeline segmentation, rg→tgrep
+                      pass-through, grep→tgrep flag translator with quote-preserving
+                      re-emission, block-with-guidance for the rest
 ```
 
 ### Output parity
