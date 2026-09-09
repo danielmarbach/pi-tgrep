@@ -29,6 +29,11 @@ const grepSchema = Type.Object({
 
 type GrepParams = Static<typeof grepSchema>;
 
+export interface TgrepSpawnIndex {
+  root: string;
+  indexDirExists: boolean;
+}
+
 interface SearchEvent {
   filePath: string;
   lineNumber: number;
@@ -48,8 +53,16 @@ interface SearchOutcome {
 
 const DEFAULT_LIMIT = 100;
 
-function buildArgs(params: GrepParams, searchPath: string): string[] {
+function isInsideRoot(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+export function buildTgrepArgs(params: GrepParams, searchPath: string, index?: TgrepSpawnIndex): string[] {
   const args = ["--json", "--line-number", "--color=never", "--hidden", "--no-messages"];
+  if (index?.indexDirExists && isInsideRoot(index.root, searchPath)) {
+    args.push("--index-path", path.join(index.root, ".tgrep"));
+  }
   if (params.ignoreCase) args.push("-i");
   if (params.literal) args.push("-F");
   if (params.glob) args.push("-g", params.glob);
@@ -65,6 +78,7 @@ function runSearch(
   cwd: string,
   effectiveLimit: number,
   signal: AbortSignal | undefined,
+  index?: TgrepSpawnIndex,
 ): Promise<SearchOutcome> {
   return new Promise((resolve) => {
     const outcome: SearchOutcome = {
@@ -77,7 +91,7 @@ function runSearch(
     };
     let child: ChildProcess;
     try {
-      child = spawn(bin, buildArgs(params, searchPath), { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(bin, buildTgrepArgs(params, searchPath, index), { cwd, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
       outcome.spawnError = error instanceof Error ? error : new Error(String(error));
       resolve(outcome);
@@ -189,9 +203,15 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
         if (fallback) return fallback;
         throw new Error("tgrep is not available and the ripgrep fallback failed");
       }
+      let index: TgrepSpawnIndex | undefined;
       try {
         const root = await repoRoot(ctx.cwd);
         if (root) {
+          let indexDirExists = false;
+          try {
+            indexDirExists = (await stat(path.join(root, ".tgrep"))).isDirectory();
+          } catch {}
+          index = { root, indexDirExists };
           const st = await status(pi, root);
           if (st.kind === "server" && !st.indexingComplete) {
             const fallback = await delegateToBuiltin();
@@ -200,7 +220,7 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
         }
       } catch {}
 
-      const outcome = await runSearch(bin, params, searchPath, ctx.cwd, effectiveLimit, signal);
+      const outcome = await runSearch(bin, params, searchPath, ctx.cwd, effectiveLimit, signal, index);
       if (outcome.aborted) throw new Error("Operation aborted");
       if (outcome.spawnError || (outcome.code !== null && outcome.code !== 0 && outcome.code !== 1 && !outcome.killedDueToLimit)) {
         const fallback = await delegateToBuiltin();

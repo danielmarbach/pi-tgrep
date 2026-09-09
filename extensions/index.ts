@@ -1,10 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/config.ts";
-import { applyBashPolicy } from "../src/bash-policy.ts";
+import { applyToolCallPolicy } from "../src/watched-tools.ts";
 import { createGrepToolOverride } from "../src/grep-tool.ts";
 import { repoRoot, ServerManager } from "../src/server-manager.ts";
 import { findTgrep, resetBinaryCache, status } from "../src/tgrep-client.ts";
@@ -34,6 +33,21 @@ export default function piTgrep(pi: ExtensionAPI) {
   const manager = new ServerManager(pi, cfg);
   let toolRegistered = false;
   let sessionSeq = 0;
+  let cachedIndexPath: string | null | undefined;
+
+  const shellIndexPath = async (cwd: string): Promise<string | undefined> => {
+    if (cachedIndexPath !== undefined) return cachedIndexPath || undefined;
+    const root = await repoRoot(cwd);
+    if (!root) return undefined;
+    const dir = path.join(root, ".tgrep");
+    try {
+      if (!(await stat(dir)).isDirectory()) return undefined;
+    } catch {
+      return undefined;
+    }
+    cachedIndexPath = dir;
+    return dir;
+  };
 
   const ensureToolRegistered = async (): Promise<boolean> => {
     const bin = await findTgrep(pi);
@@ -90,16 +104,11 @@ export default function piTgrep(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    if (!isToolCallEventType("bash", event)) return;
-    if (!(await ensureToolRegistered())) return;
-    const input = event.input;
-    if (typeof input.command !== "string" || !input.command) return;
-    const result = applyBashPolicy(input.command, cfg.bashPolicy);
-    if (result.action === "rewrite") {
-      input.command = result.command;
-    } else if (result.action === "block") {
-      return { block: true, reason: result.reason };
-    } else if (result.action === "warn") {
+    const input = event.input as unknown as Record<string, unknown>;
+    const context = cfg.bashPolicy === "translate" ? { indexPath: await shellIndexPath(ctx.cwd) } : undefined;
+    const result = applyToolCallPolicy(event.toolName, input, cfg.bashPolicy, cfg.watchedTools, context);
+    if (result.action === "block") return { block: true, reason: result.reason };
+    if (result.warned) {
       ctx.ui.notify("pi-tgrep: shell grep bypasses the tgrep index; prefer the grep tool", "warning");
     }
   });

@@ -1,17 +1,21 @@
 import type { BashPolicyMode } from "./config.js";
 
-export type BashPolicyAction =
+export interface PolicyContext {
+  indexPath?: string;
+}
+
+export type BashPolicyAction = 
   | { action: "allow" }
   | { action: "rewrite"; command: string }
   | { action: "block"; reason: string }
   | { action: "warn"; command: string };
 
-const FAMILY_PATTERN = /\b(grep|egrep|fgrep|rg|ag|ack|pt)\b/;
+export const FAMILY_PATTERN = /\b(grep|egrep|fgrep|rg|ag|ack|pt)\b/;
 const FAMILY_TOKEN = /^(grep|egrep|fgrep|rg|ag|ack|pt)$/;
 const SCAN_ONLY_FAMILY = /^(ag|ack|pt)$/;
 const PREFIX_TOKENS = new Set(["sudo", "env", "command", "exec", "nice", "nohup", "time"]);
 
-const BLOCK_REASON =
+export const BLOCK_REASON =
   "Command uses grep/rg in the shell, which bypasses the tgrep index. Use the grep tool instead " +
   "(it supports path, glob, ignoreCase, literal, context, limit), or run tgrep directly.";
 
@@ -91,7 +95,7 @@ interface OutToken {
 
 interface Translation {
   tokens: OutToken[];
-  positionalCount: number;
+  positionals: string[];
 }
 
 function tokenizeDetailed(command: string): Token[] | null {
@@ -204,7 +208,21 @@ function scanPipeline(command: string): string[] | null {
       i += 2;
       continue;
     }
-    if (c === ";" || c === "`" || c === "&" || c === "<") return null;
+    if (c === ";" || c === "`" || c === "&") return null;
+    if (c === "<") {
+      if (command[i + 1] !== "<") return null;
+      current += "<<";
+      i += 2;
+      if (command[i] === "-") {
+        current += "-";
+        i++;
+      }
+      while (i < command.length && /[A-Za-z0-9_'"]/.test(command[i]!)) {
+        current += command[i]!;
+        i++;
+      }
+      continue;
+    }
     if (c === "$" && command[i + 1] === "(") return null;
     if (c === ">") {
       current += c;
@@ -253,7 +271,15 @@ function splitRedirect(segment: string): { cmd: string; suffix: string } {
     }
     if (c === "'") inSingle = true;
     else if (c === '"') inDouble = true;
-    else if (c === ">") return { cmd: segment.slice(0, i), suffix: segment.slice(i) };
+    else if (c === ">") {
+      let start = i;
+      if (i > 0 && /[0-9]/.test(segment[i - 1]!)) {
+        let j = i - 1;
+        while (j > 0 && /[0-9]/.test(segment[j - 1]!)) j--;
+        if (j === 0 || /\s/.test(segment[j - 1]!)) start = j;
+      }
+      return { cmd: segment.slice(0, start), suffix: segment.slice(start) };
+    }
   }
   return { cmd: segment, suffix: "" };
 }
@@ -307,16 +333,16 @@ function expandShortFlags(
 
 function translateRg(tokens: string[]): Translation | null {
   const out: OutToken[] = [];
-  let positionalCount = 0;
+  const positionals: string[] = [];
   let i = 0;
   while (i < tokens.length) {
     const t = tokens[i]!;
     if (t === "--") {
       for (const rest of tokens.slice(i + 1)) {
         out.push({ text: rest });
-        positionalCount++;
+        positionals.push(rest);
       }
-      return { tokens: out, positionalCount };
+      return { tokens: out, positionals };
     }
     if (t.startsWith("--")) {
       const eq = t.indexOf("=");
@@ -341,11 +367,11 @@ function translateRg(tokens: string[]): Translation | null {
       i += result.consumed;
     } else {
       out.push({ text: t });
-      positionalCount++;
+      positionals.push(t);
     }
     i++;
   }
-  return { tokens: out, positionalCount };
+  return { tokens: out, positionals };
 }
 
 function translateGrep(bin: string, tokens: string[]): Translation | null {
@@ -410,7 +436,7 @@ function translateGrep(bin: string, tokens: string[]): Translation | null {
   }
   if (positionals.length > 0 && BRE_ONLY_PATTERN.test(positionals[0]!)) return null;
   for (const p of positionals) out.push({ text: p });
-  return { tokens: out, positionalCount: positionals.length };
+  return { tokens: out, positionals };
 }
 
 function emitToken(text: string, forceQuote: boolean): string {
@@ -421,6 +447,7 @@ function emitToken(text: string, forceQuote: boolean): string {
 function policySegment(
   segment: string,
   mode: BashPolicyMode,
+  indexPath?: string,
 ): { kind: "verbatim" } | { kind: "rewrite"; text: string } | "block" {
   const { cmd, suffix } = splitRedirect(segment);
   const tokens = tokenizeDetailed(cmd);
@@ -433,24 +460,105 @@ function policySegment(
   const translation = bin === "rg" ? translateRg(rest.slice(1)) : translateGrep(bin, rest.slice(1));
   if (!translation) return "block";
   const forceScan = bin === "rg" && rest.includes("--files");
-  if (translation.positionalCount <= 1 && !forceScan) return { kind: "verbatim" };
-  const rendered = ["tgrep", ...translation.tokens.map((t) => emitToken(t.text, t.quote === true))];
+  if (translation.positionals.length <= 1 && !forceScan) return { kind: "verbatim" };
+  const rendered = ["tgrep"];
+  const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
+  const allPathsRelative = translation.positionals
+    .slice(1)
+    .every((p) => !p.startsWith("/") && !p.startsWith("~"));
+  if (indexPath && !hasIndexPath && allPathsRelative) {
+    rendered.push("--index-path", emitToken(indexPath, true));
+  }
+  rendered.push(...translation.tokens.map((t) => emitToken(t.text, t.quote === true)));
   const cmdText = [...prefixes, ...rendered].join(" ");
   return { kind: "rewrite", text: suffix ? `${cmdText} ${suffix.trim()}` : cmdText };
 }
 
-export function applyBashPolicy(command: string, mode: BashPolicyMode): BashPolicyAction {
+function extractCdPrefix(command: string): { prefix: string; rest: string } | "unsafe" | null {
+  let pos = 0;
+  let prefix = "";
+  let segments = 0;
+  for (;;) {
+    while (pos < command.length && /\s/.test(command[pos]!)) pos++;
+    if (!command.startsWith("cd", pos)) {
+      return segments > 0 ? { prefix, rest: command.slice(pos) } : null;
+    }
+    const after = command[pos + 2];
+    if (after === undefined || !/\s/.test(after)) {
+      return segments > 0 ? { prefix, rest: command.slice(pos) } : null;
+    }
+    let cursor = pos + 2;
+    while (cursor < command.length && /\s/.test(command[cursor]!)) cursor++;
+    const targetStart = cursor;
+    let inSingle = false;
+    let inDouble = false;
+    while (cursor < command.length) {
+      const c = command[cursor]!;
+      if (inSingle) {
+        if (c === "'") inSingle = false;
+        cursor++;
+        continue;
+      }
+      if (inDouble) {
+        if (c === "$" || c === "`") return "unsafe";
+        if (c === "\\") {
+          cursor += 2;
+          continue;
+        }
+        if (c === '"') inDouble = false;
+        cursor++;
+        continue;
+      }
+      if (c === "'") {
+        inSingle = true;
+        cursor++;
+        continue;
+      }
+      if (c === '"') {
+        inDouble = true;
+        cursor++;
+        continue;
+      }
+      if (/\s/.test(c)) break;
+      if (c === ";" || c === "&") break;
+      if ("$`|<>()".includes(c)) return "unsafe";
+      cursor++;
+    }
+    if (cursor === targetStart || inSingle || inDouble) return "unsafe";
+    if (command[targetStart] === "-") return "unsafe";
+    segments++;
+    let j = cursor;
+    while (j < command.length && /\s/.test(command[j]!)) j++;
+    if (command.startsWith("&&", j)) {
+      pos = j + 2;
+    } else if (command[j] === ";") {
+      pos = j + 1;
+    } else {
+      return { prefix: command.slice(0, cursor), rest: command.slice(cursor) };
+    }
+    while (pos < command.length && /\s/.test(command[pos]!)) pos++;
+    prefix = command.slice(0, pos);
+    if (segments >= 3) return { prefix, rest: command.slice(pos) };
+  }
+}
+
+export function applyBashPolicy(command: string, mode: BashPolicyMode, context?: PolicyContext): BashPolicyAction {
   if (mode === "off") return { action: "allow" };
   if (!FAMILY_PATTERN.test(command)) return { action: "allow" };
   if (mode === "warn") return { action: "warn", command };
 
-  const segments = scanPipeline(command);
+  const cd = extractCdPrefix(command);
+  if (cd === "unsafe") return { action: "block", reason: BLOCK_REASON };
+  const cdPrefix = cd?.prefix ?? "";
+  const effective = cd ? cd.rest : command;
+
+  const segments = scanPipeline(effective);
   if (!segments) return { action: "block", reason: BLOCK_REASON };
 
   const rendered: string[] = [];
   let changed = false;
   for (const segment of segments) {
-    const result = policySegment(segment, mode);
+    const result = policySegment(segment, mode, context?.indexPath);
     if (result === "block") return { action: "block", reason: BLOCK_REASON };
     if (result.kind === "rewrite") {
       changed = true;
@@ -460,5 +568,5 @@ export function applyBashPolicy(command: string, mode: BashPolicyMode): BashPoli
     }
   }
   if (!changed) return { action: "allow" };
-  return { action: "rewrite", command: rendered.join(" | ") };
+  return { action: "rewrite", command: cdPrefix + rendered.join(" | ") };
 }

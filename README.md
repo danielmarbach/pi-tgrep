@@ -23,14 +23,33 @@ path into the fast one and closes the side doors.
 2. **Owns the `grep` tool** — registers a tool named `grep` with the identical schema
    (`pattern`, `path`, `glob`, `ignoreCase`, `literal`, `context`, `limit`) and identical
    output contract. The model calls `grep` like always; the results come from the trigram
-   index. Every result carries `details.engine` for provenance.
-3. **Guards the shell** — a `tool_call` hook inspects `bash` invocations, pipeline-aware:
+   index. Every result carries `details.engine` for provenance. When the repo index
+   (`<repo>/.tgrep`) exists, searches under the repo root automatically pass
+   `--index-path <repo>/.tgrep` — tgrep only looks for the index next to the searched path,
+   so a subdirectory search would otherwise silently fall back to scanning every file.
+3. **Guards the shell** — a `tool_call` hook inspects `bash` **and MCP shell-executing tools**
+   (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute` — bare or namespaced like
+   `mcp__context-mode__ctx_execute`; extend via `PI_TGREP_WATCH_TOOLS`), pipeline-aware:
    - commands are split on top-level `|`; each segment is judged on its primary binary;
    - grep/`rg` scan segments (pattern + path present) are transparently translated to `tgrep`
      with quote-preserving re-emission (`'foo|bar'` stays quoted, translated globs are always
      quoted, `sudo`/`env` prefixes survive);
+   - when the repo index (`<repo>/.tgrep`) exists, translated commands whose positional paths
+     are all relative get `--index-path '<repo>/.tgrep'` injected (any absolute positional —
+     or an explicit `--index-path` — skips the injection);
    - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim — no tree scan, no block;
-   - output redirects (`2>/dev/null`, `>file`, `2>&1`) are preserved;
+   - `ctx_execute`/`ctx_execute_file` shell code is checked line by line; heredoc bodies are
+     never rewritten, and inside heredoc-containing blocks family command lines block instead;
+   - non-shell `ctx_execute`/`ctx_execute_file` code (e.g. JavaScript) is scanned for
+     `child_process` exec/spawn calls (`exec`, `execSync`, `execFile`, `execFileSync`,
+     `spawn`, `spawnSync`): an embedded shell grep inside a backtick template or
+     double-quoted string is translated in place, while single-quoted, escaped, interpolated,
+     or statically unextractable commands are blocked — `execSync('grep -rn …')` can no
+     longer bypass the index;
+   - `ctx_batch_execute` entries are checked individually (the entry's label appears in block
+     reasons);
+   - output-side redirects are preserved with fd numbers still glued to their redirect
+     (`2>/dev/null`, `2>>file`, `2>&1`) — the fd digit never leaks into tgrep as a search path;
    - `;`, `&&`, `||`, background `&`, backticks, `$()`, and stdin redirects (`<`) are blocked;
    - unknown flags, BRE-only patterns, and `ag`/`ack`/`pt` are blocked with a reason that
      redirects the model to the `grep` tool;
@@ -71,6 +90,7 @@ All configuration is via environment variables.
 | `PI_TGREP_DISABLED` | – | `1` disables the extension entirely |
 | `PI_TGREP_AUTO_INSTALL` | `ask` | `ask` \| `never` \| `always` — brew install when tgrep is missing; `ask` prompts once and remembers (`~/.cache/pi-tgrep/auto-install.json`) |
 | `PI_TGREP_BASH_POLICY` | `translate` | `translate` (translate scan segments in pipelines, block the rest) \| `block` (block all grep-family shell use) \| `warn` (allow, notify) \| `off` |
+| `PI_TGREP_WATCH_TOOLS` | – | additional tool names to watch, comma-separated, additive to the default set (`bash`, `ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`); names match bare or `namespace__name` |
 | `PI_TGREP_SERVE_ARGS` | – | extra args passed to `tgrep serve` (e.g. `"--exclude vendor --no-watch"`); split on whitespace — quotes are not parsed, so individual args cannot contain spaces |
 | `PI_TGREP_INDEX_PATH` | tgrep default (`<repo>/.tgrep`) | forwarded as `--index-path` |
 | `PI_TGREP_SCOPE` | `repo` | `repo` keeps the server after the session ends; `session` stops servers this session started on shutdown |

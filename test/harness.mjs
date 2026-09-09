@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { applyBashPolicy } from "../src/bash-policy.ts";
-import { createGrepToolOverride } from "../src/grep-tool.ts";
+import { applyToolCallPolicy } from "../src/watched-tools.ts";
+import { loadConfig } from "../src/config.ts";
+import { buildTgrepArgs, createGrepToolOverride } from "../src/grep-tool.ts";
 import { repoRoot, ServerManager } from "../src/server-manager.ts";
 import { status, stopServer } from "../src/tgrep-client.ts";
 
@@ -85,7 +87,201 @@ function runPolicyTests() {
   });
   policyCase("fgrep -n 'a.b' .", "translate", { action: "rewrite", command: "tgrep -F -n a.b ." });
   policyCase("egrep 'ab+c' .", "translate", { action: "rewrite", command: "tgrep ab+c ." });
+  policyCase(
+    'cd /Users/danielmarbach/Projects/NServiceBus && grep -rl "IBehavior<" src --include="*.cs" | head -50',
+    "translate",
+    {
+      action: "rewrite",
+      command: "cd /Users/danielmarbach/Projects/NServiceBus && tgrep -l -g '*.cs' 'IBehavior<' src | head -50",
+    },
+  );
+  policyCase("cd /a && cd /b && rg -n foo .", "translate", {
+    action: "rewrite",
+    command: "cd /a && cd /b && tgrep -n foo .",
+  });
+  policyCase("cd /x; grep foo .", "translate", { action: "rewrite", command: "cd /x; tgrep foo ." });
+  policyCase('cd "$(pwd)" && grep foo .', "translate", { action: "block" });
+  policyCase("echo hi && grep foo .", "translate", { action: "block" });
+  policyCase(
+    "grep -rniE --include=\"*.cs\" '^\\s*(public\\s+)?class' src/NServiceBus.Core 2>/dev/null | grep -v \"/obj/\" | sed \"s|x|y|\" | sort",
+    "translate",
+    {
+      action: "rewrite",
+      command:
+        "tgrep -n -i -g '*.cs' '^\\s*(public\\s+)?class' src/NServiceBus.Core 2>/dev/null | grep -v \"/obj/\" | sed \"s|x|y|\" | sort",
+    },
+  );
+  policyCase("rg foo . 2>&1", "translate", { action: "rewrite", command: "tgrep foo . 2>&1" });
+  policyCase("rg foo . 2>>run.log", "translate", { action: "rewrite", command: "tgrep foo . 2>>run.log" });
+  policyCase("grep foo file2>out.txt", "translate", { action: "rewrite", command: "tgrep foo file2 >out.txt" });
+  policyCase("cd /x && grep foo . 2>/dev/null", "translate", {
+    action: "rewrite",
+    command: "cd /x && tgrep foo . 2>/dev/null",
+  });
   console.log("policy tests ok");
+}
+
+async function runRedirectExecTest() {
+  const dir = await mkdtemp(path.join(tmpdir(), "pi-tgrep-redirect-"));
+  await mkdir(path.join(dir, "src/NServiceBus.Core"), { recursive: true });
+  await writeFile(path.join(dir, "src/NServiceBus.Core/Host.cs"), "public class Host {}\nclass Other {}\n");
+  const command =
+    "grep -rniE --include=\"*.cs\" '^\\s*(public\\s+)?class' src/NServiceBus.Core 2>/dev/null | grep -v \"/obj/\" | sed \"s|x|y|\" | sort";
+  const result = applyBashPolicy(command, "translate");
+  assert.equal(result.action, "rewrite");
+  assert.ok(result.command.includes("2>/dev/null"), "fd redirect must stay glued");
+  assert.ok(!result.command.includes(" 2 >"), "fd digit must not leak as a tgrep path");
+  let code = 0;
+  let stdout = "";
+  let stderr = "";
+  try {
+    const res = await execFileP("bash", ["-c", result.command], { cwd: dir, encoding: "utf8" });
+    stdout = res.stdout;
+    stderr = res.stderr;
+  } catch (err) {
+    code = typeof err.code === "number" ? err.code : 1;
+    stdout = err.stdout ?? "";
+    stderr = err.stderr ?? "";
+  }
+  assert.equal(code, 0, `rewritten command failed (code ${code}): ${stderr}`);
+  assert.ok(stdout.includes("Host.cs"), `expected matches, got: ${stdout}`);
+  assert.ok(!stderr.includes("IO error"), `unexpected IO error: ${stderr}`);
+  await rm(dir, { recursive: true, force: true });
+  console.log("redirect exec test ok");
+}
+
+function runWatchedToolsTests() {
+  const watched = ["bash", "ctx_execute", "ctx_execute_file", "ctx_batch_execute"];
+
+  let input = { language: "shell", code: "grep -rl foo src | head" };
+  let r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "tgrep -l foo src | head");
+
+  input = { language: "javascript", code: "const grep = 'grep foo';" };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "allow");
+  assert.equal(input.code, "const grep = 'grep foo';");
+
+  input = { language: "shell", code: "echo start\ngrep -rl foo src | head\necho done" };
+  r = applyToolCallPolicy("ctx_execute_file", input, "translate", watched);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "echo start\ntgrep -l foo src | head\necho done");
+
+  input = { commands: [{ label: "list", command: "ls src/" }, { label: "scan", command: "rg -n x ." }] };
+  r = applyToolCallPolicy("ctx_batch_execute", input, "translate", watched);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.commands[0].command, "ls src/");
+  assert.equal(input.commands[1].command, "tgrep -n x .");
+
+  input = { commands: [{ label: "cleanup", command: "grep foo .; rm x" }] };
+  r = applyToolCallPolicy("ctx_batch_execute", input, "translate", watched);
+  assert.equal(r.action, "block");
+  assert.match(r.reason ?? "", /cleanup/);
+
+  input = { language: "shell", code: "grep -rl foo src" };
+  r = applyToolCallPolicy("mcp__context-mode__ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "tgrep -l foo src");
+
+  const heredoc = "cat > filter.sh <<'EOF'\ngrep -rl foo src | head\nEOF";
+  input = { language: "shell", code: heredoc };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "allow");
+  assert.equal(input.code, heredoc);
+
+  const heredocThenGrep = "cat > f <<EOF\nhi\nEOF\ngrep -rl foo src";
+  input = { language: "shell", code: heredocThenGrep };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "block");
+
+  process.env.PI_TGREP_WATCH_TOOLS = "custom_tool";
+  const cfg = loadConfig();
+  assert.ok(cfg.watchedTools.includes("custom_tool"));
+  input = { command: "grep -rn foo ." };
+  r = applyToolCallPolicy("custom_tool", input, "translate", cfg.watchedTools);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.command, "tgrep -n foo .");
+  delete process.env.PI_TGREP_WATCH_TOOLS;
+
+  input = { language: "shell", code: "cd /repo && grep -rl needle src | head -3" };
+  r = applyToolCallPolicy("ctx_execute", input, "translate");
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "cd /repo && tgrep -l needle src | head -3");
+
+  input = { command: "grep -rn needle src" };
+  r = applyToolCallPolicy("bash", input, "translate", watched, { indexPath: "/repo/.tgrep" });
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.command, "tgrep --index-path '/repo/.tgrep' -n needle src");
+
+  input = { command: "grep -rn needle src" };
+  r = applyToolCallPolicy("bash", input, "translate", watched);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.command, "tgrep -n needle src");
+
+  input = { command: "rg foo /etc" };
+  r = applyToolCallPolicy("bash", input, "translate", watched, { indexPath: "/repo/.tgrep" });
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.command, "tgrep foo /etc");
+
+  input = { command: "rg --index-path /custom -n foo src" };
+  r = applyToolCallPolicy("bash", input, "translate", watched, { indexPath: "/repo/.tgrep" });
+  assert.equal(r.action, "rewrite");
+  assert.ok(!input.command.includes("'/repo/.tgrep'"), "must not double-inject --index-path");
+
+  input = { language: "javascript", code: "const out = execSync(`grep -rn foo .`);" };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "const out = execSync(`tgrep -n foo .`);");
+
+  input = { language: "javascript", code: 'exec("grep -rl foo src");' };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, 'exec("tgrep -l foo src");');
+
+  input = { language: "javascript", code: "execSync('grep -rn foo .');" };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "block");
+  assert.match(r.reason ?? "", /bypasses the tgrep index/);
+
+  input = { language: "javascript", code: "execSync('ls -la');" };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "allow");
+
+  input = { language: "javascript", code: "// grep stuff\nls();" };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "allow");
+
+  input = { language: "javascript", code: "execSync(cmd);" };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "block");
+
+  input = { language: "javascript", code: "execSync(`grep ${name} .`);" };
+  r = applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "block");
+
+  input = { language: "javascript", code: "const out = spawnSync('grep -rn foo .');" };
+  r = applyToolCallPolicy("ctx_execute_file", input, "translate", watched);
+  assert.equal(r.action, "block");
+
+  console.log("watched tools tests ok");
+}
+
+function runGrepArgsTests(repoDir) {
+  const sub = path.join(repoDir, "src");
+  const idx = { root: repoDir, indexDirExists: true };
+  const subpath = buildTgrepArgs({ pattern: "needle" }, sub, idx);
+  assert.ok(subpath.includes("--index-path"), "subpath search with index must inject --index-path");
+  assert.ok(subpath.includes(path.join(repoDir, ".tgrep")));
+  const atRoot = buildTgrepArgs({ pattern: "needle" }, repoDir, idx);
+  assert.ok(atRoot.includes("--index-path"), "root search with index must inject --index-path");
+  const outside = buildTgrepArgs({ pattern: "needle" }, "/etc", idx);
+  assert.ok(!outside.includes("--index-path"), "search outside root must not inject");
+  const noIndexDir = buildTgrepArgs({ pattern: "needle" }, sub, { root: repoDir, indexDirExists: false });
+  assert.ok(!noIndexDir.includes("--index-path"), "missing index dir must not inject");
+  const noRoot = buildTgrepArgs({ pattern: "needle" }, sub);
+  assert.ok(!noRoot.includes("--index-path"), "no root context must not inject");
+  console.log("grep args tests ok");
 }
 
 async function runGrepToolTests(repoDir) {
@@ -165,6 +361,9 @@ await cp(FIXTURE, repoDir, { recursive: true });
 await execFileP("git", ["init"], { cwd: repoDir });
 try {
   runPolicyTests();
+  await runRedirectExecTest();
+  runWatchedToolsTests();
+  runGrepArgsTests(repoDir);
   await runGrepToolTests(repoDir);
   await runServerManagerTests(repoDir);
 } finally {

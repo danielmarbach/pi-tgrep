@@ -11,6 +11,35 @@ All milestones M0–M4 done, skill-reviewed (typescript-code-review), all 13 rev
 typecheck + harness green (19 policy cases, 8 grep-tool cases, server-manager lifecycle). Code is
 uncommitted in this repo; install with `pi install /path/to/repo` or run with `pi -e ./extensions`.
 
+### Live-usage fixes (2026-09-08)
+
+- **C2 — fd-redirect split on re-emission**: `splitRedirect` treated a leading fd digit
+  (`… 2>/dev/null`) as part of the command, so rewrites emitted `… 2 >/dev/null` and tgrep
+  received `2` as a path ("IO error for operation on 2"). A bare fd-number token immediately
+  followed by `>`/`>>`/`>&` is now glued to the redirect in the rewritten output
+  (`tgrep … src/X 2>/dev/null`). Verified by executing the rewritten repro pipeline via bash
+  in a temp fixture (exit 0, no IO error).
+- **P1 — grep tool missed the index on subdirectory searches**: tgrep only looks for the index
+  next to the searched path, so `tgrep <pattern> src/sub` warned `no index at …/src/sub/.tgrep`
+  and scanned every file. `buildTgrepArgs` (pure, exported) now injects `--index-path
+  <repo>/.tgrep` when `<repo>/.tgrep` exists and the resolved search path is inside the repo
+  root. Verified live: injection removes the warning and returns identical results.
+- **P2 — same injection for rewritten shell commands**: `applyToolCallPolicy` takes an optional
+  `{ indexPath }` context; `extensions/index.ts` resolves `<repo>/.tgrep` once (cached after
+  first success) and passes it in. Translated scan segments get `--index-path '<path>'`
+  injected only when all positional paths are relative; an absolute positional or an explicit
+  `--index-path` skips injection. Without context the output is byte-identical to before.
+- **E1 — JavaScript child_process guard**: `execSync('grep -rn …')` inside
+  `ctx_execute`/`ctx_execute_file` non-shell code bypassed the index entirely. Non-shell code is
+  now scanned for exec/spawn calls (`exec`, `execSync`, `execFile`, `execFileSync`, `spawn`,
+  `spawnSync`, word-bounded); the first string argument (backtick/double/single-quoted,
+  escapes honored) is checked for a grep-family leading command. Backtick and double-quoted
+  hosts get the embedded command rewritten in place (single-quote emitter is safe there and
+  never introduces backticks or `${`); single-quoted, backslash-escaped, interpolated
+  (`${…}` in templates), or statically unextractable commands block with the standard reason
+  plus a bypass note. Non-command mentions (comments, identifiers, non-exec strings) are
+  untouched. Verified live: rewritten JS executes with tgrep in place of grep.
+
 ### M0 ground truth that changed the plan
 
 - `tgrep serve` is **foreground-only** → plugin spawns it detached; a second `serve` on the same
@@ -190,6 +219,9 @@ output contract, so the model experiences zero change:
   and `promptGuidelines` (["Use grep for code search; it is tgrep-backed and indexed. Do not run
   grep/rg in bash — the grep tool is faster."]) since overrides don't inherit them.
 - Mark provenance in `details` (`{ engine: "tgrep" \| "rg-fallback" }`) for testing/debugging.
+- **Index discovery**: tgrep only looks for the index next to the searched path. When
+  `<repo>/.tgrep` exists and the resolved search path is inside the repo root, the tgrep args
+  include `--index-path <repo>/.tgrep` (see `buildTgrepArgs`); rg fallback is unaffected.
 - **Fallback ladder**: binary missing → don't register (built-in stays). Server down → one
   detached-serve retry, then client-side index search (still tgrep). Index still building →
   temporary rg execution with identical output shaping so results are complete.
@@ -197,15 +229,55 @@ output contract, so the model experiences zero change:
 
 ### 4.5 `src/bash-policy.ts` — shell interception (secondary enforcement)
 
-`pi.on("tool_call")` for `toolName === "bash"`:
+`pi.on("tool_call")` interception is not limited to `bash`: a pure `applyToolCallPolicy(toolName,
+input, mode, watchedTools)` wrapper covers MCP shell-executing tools too — `ctx_execute`,
+`ctx_execute_file` (when `input.language === "shell"`, line-by-line over `input.code`), and
+`ctx_batch_execute` (per-entry over `input.commands[].command`, entry label included in block
+reasons). Tool names match bare or namespaced (`mcp__context-mode__ctx_execute`).
+`PI_TGREP_WATCH_TOOLS` adds more watched tools (bash-style `{command}` extraction); `watchedTools`
+of `applyToolCallPolicy` defaults to the standard list, so 3-arg calls watch bash + the context-
+mode tools. An optional context (`{ indexPath?: string }`) carries the repo index path;
+`extensions/index.ts` resolves `<repo>/.tgrep` once per session (cached after first success) and
+passes it so translated scan segments can pin the index. Accepted gaps: compound lines like
+`if grep -q …; then` start with a non-family token and pass through; heredoc bodies are never
+rewritten — inside heredoc-containing blocks the policy becomes no-rewrite + block-only for
+family command lines; `ctx_execute_file`'s JS-side `FILE_CONTENT` templating is irrelevant since
+only shell code is rewritten.
+
+Non-shell `ctx_execute`/`ctx_execute_file` code is guarded against the `child_process` bypass:
+exec/spawn call names are matched at word boundaries and the first string argument (backtick
+template, double- or single-quoted; escapes honored) is treated as a shell command when its
+leading command is grep-family. Backtick/double-quoted hosts are rewritten in place — the
+emitter only produces single quotes, so it is safe inside those strings and never introduces
+backticks or `${`. Single-quoted hosts, contents containing backslash escapes or `${`
+interpolation (templates), and statically unextractable arguments block with the standard
+reason plus a note that shell grep inside JavaScript bypasses the tgrep index. Code that merely
+mentions grep (comments, identifiers, non-command strings) is untouched. `execSync(cmd)` with a
+variable argument therefore blocks (cannot be proven safe), and `spawn("grep", [args])` array
+form is not detected (first-argument check only).
+
+Leading `cd` prefixes are exempt from the multi-statement block: before pipeline segmentation, up
+to three leading `cd <safe-path>` segments joined by `&&` or `;` are stripped and re-emitted
+verbatim (original quoting preserved via substring). A safe path is a single quote-aware token
+with no `$`, backtick, `;`, `|`, `&`, `<`, `>`, `(` — substitution (even double-quoted) or any
+operator in the target falls back to the block. Only `cd` gets this exception: any other
+`&&`/`;`-joined chain (`echo hi && grep foo .`) still blocks.
+
+For `bash` (and every watched shell payload):
 
 1. Split the command into pipeline segments on top-level `|` only (quote-aware). Still block on
-   `;`, `&&`, `||`, `&`, backticks, `$()`, and `<` (stdin redirect). Output-side redirects
-   (`2>/dev/null`, `>file`, `>>file`, `2>&1`) are safe and stay attached to their segment verbatim.
+   `;`, `&&`, `||`, `&`, backticks, `$()`, and `<` (stdin redirect; `<<`/`<<-` heredoc operators
+   are recognized and allowed). Output-side redirects
+   (`2>/dev/null`, `>file`, `>>file`, `2>&1`) are safe and stay attached to their segment verbatim;
+   a bare fd-number token immediately followed by the redirect is glued back on re-emission so
+   `2` never becomes a tgrep positional (a digit inside a larger word like `file2>out` stays a
+   path argument).
 2. Per segment: tokenize (quote-tracking), strip `env`/`sudo` prefixes, identify the primary
    binary:
    - grep-family primary with ≥2 positionals (pattern + path(s)) = tree scan → translate that
-     segment with the flag translator; translation failure blocks the whole command.
+     segment with the flag translator; translation failure blocks the whole command. When an
+     index-path context is present and every positional path is relative, `--index-path '<path>'`
+     is injected (quoted); any absolute positional or explicit `--index-path` skips injection.
    - grep-family primary with ≤1 positional (pattern only, reads stdin) = post-filter → keep the
      segment verbatim (`rg --files` is the exception: always a scan → translate).
    - `tgrep` or non-family primary → verbatim. `ag`/`ack`/`pt` always block (they scan regardless
