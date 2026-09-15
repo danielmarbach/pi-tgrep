@@ -8,7 +8,9 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "analyze": "node scripts/analyze-pi-sessions.mjs"
+    "analyze": "node scripts/analyze-pi-sessions.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/harness.mjs test/bash-policy-fallback.test.mjs test/grep-details.test.mjs test/server-lifecycle.test.mjs"
   },
   "pi": {
     "extensions": [
