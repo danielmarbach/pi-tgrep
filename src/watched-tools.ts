@@ -3,12 +3,10 @@ import { applyBashPolicy, BLOCK_REASON, FAMILY_PATTERN, type PolicyContext } fro
 
 export const DEFAULT_WATCHED_TOOLS = ["bash", "ctx_execute", "ctx_execute_file", "ctx_batch_execute"];
 
-export interface ToolPolicyAction {
-  action: "allow" | "rewrite" | "block";
-  reason?: string;
-  warned?: boolean;
-  code?: string;
-}
+export type ToolPolicyAction =
+  | { action: "allow"; warned?: boolean }
+  | { action: "block"; reason: string }
+  | { action: "rewrite"; code?: string };
 
 export function watchedKey(toolName: string, watchedTools: string[]): string | null {
   for (const watched of watchedTools) {

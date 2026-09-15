@@ -52,6 +52,33 @@ interface SearchOutcome {
   spawnError?: Error;
 }
 
+interface RgJsonPayload {
+  path?: { text?: string };
+  line_number?: number;
+  lines?: { text?: string };
+}
+
+/** ripgrep's `--json` output is an external, untrusted stream; validate its shape before trusting field values. */
+type RgJsonLine =
+  | { type: "match"; data?: RgJsonPayload }
+  | { type: "context"; data?: RgJsonPayload }
+  | { type: "begin" | "end" | "summary"; data?: unknown };
+
+const RG_JSON_LINE_TYPES = new Set(["match", "context", "begin", "end", "summary"]);
+
+function parseRgJsonLine(line: string): RgJsonLine | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const type = (parsed as { type?: unknown }).type;
+  if (typeof type !== "string" || !RG_JSON_LINE_TYPES.has(type)) return null;
+  return parsed as RgJsonLine;
+}
+
 const DEFAULT_LIMIT = 100;
 
 type FallbackReason = "indexing" | "no-binary" | "error";
@@ -133,13 +160,8 @@ function runSearch(
     });
     rl.on("line", (line) => {
       if (!line.trim()) return;
-      let event: { type?: string; data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } } };
-      try {
-        event = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (event.type !== "match" && event.type !== "context") return;
+      const event = parseRgJsonLine(line);
+      if (!event || (event.type !== "match" && event.type !== "context")) return;
       const filePath = event.data?.path?.text;
       const lineNumber = event.data?.line_number;
       const lineText = event.data?.lines?.text;

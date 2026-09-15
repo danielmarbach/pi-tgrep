@@ -15,6 +15,25 @@ const FAMILY_TOKEN = /^(grep|egrep|fgrep|rg|ag|ack|pt)$/;
 const SCAN_ONLY_FAMILY = /^(ag|ack|pt)$/;
 const PREFIX_TOKENS = new Set(["sudo", "env", "command", "exec", "nice", "nohup", "time"]);
 
+/** Binaries recognized by the grep family policy; scoped narrowly to keep matching exhaustive. */
+type GrepFamilyBinary = "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "pt";
+/** Binaries scanned but never rewritten (no rg-compatible translation exists). */
+type ScanOnlyBinary = "ag" | "ack" | "pt";
+/** Binaries that go through `translateGrep` (POSIX grep and its ERE/fixed-string variants). */
+type TranslatableGrepBinary = "grep" | "egrep" | "fgrep";
+
+function isGrepFamilyBinary(value: string): value is GrepFamilyBinary {
+  return FAMILY_TOKEN.test(value);
+}
+
+function isScanOnlyBinary(value: GrepFamilyBinary): value is ScanOnlyBinary {
+  return SCAN_ONLY_FAMILY.test(value);
+}
+
+function isTranslatableGrepBinary(value: GrepFamilyBinary): value is TranslatableGrepBinary {
+  return value === "grep" || value === "egrep" || value === "fgrep";
+}
+
 export const BLOCK_REASON =
   "Command uses grep/rg in the shell, which bypasses the tgrep index. Use the grep tool instead " +
   "(it supports path, glob, ignoreCase, literal, context, limit), or run tgrep directly.";
@@ -388,7 +407,7 @@ function translateRg(tokens: string[]): Translation | null {
   return { tokens: out, positionals, patternFlag, patterns: [], engine: "ere" };
 }
 
-function translateGrep(bin: string, tokens: string[]): Translation | null {
+function translateGrep(bin: TranslatableGrepBinary, tokens: string[]): Translation | null {
   const out: OutToken[] = [];
   const positionals: string[] = [];
   const ePatterns: string[] = [];
@@ -479,21 +498,27 @@ function emitToken(text: string, forceQuote: boolean): string {
   return `'${text.replace(/'/g, "'\\''")}'`;
 }
 
+type SegmentResult = { kind: "verbatim" } | { kind: "rewrite"; text: string } | { kind: "block" };
+
 function policySegment(
   segment: string,
   mode: BashPolicyMode,
   indexPath?: string,
-): { kind: "verbatim" } | { kind: "rewrite"; text: string } | "block" {
+): SegmentResult {
   const { cmd, suffix } = splitRedirect(segment);
   const tokens = tokenizeDetailed(cmd);
-  if (!tokens) return "block";
+  if (!tokens) return { kind: "block" };
   const { prefixes, rest, ok } = stripPrefixes(tokens.map((t) => t.text));
   const bin = rest[0];
-  if (!ok || !bin || !FAMILY_TOKEN.test(bin)) return { kind: "verbatim" };
-  if (mode === "block") return "block";
-  if (SCAN_ONLY_FAMILY.test(bin)) return { kind: "verbatim" };
-  const translation = bin === "rg" ? translateRg(rest.slice(1)) : translateGrep(bin, rest.slice(1));
-  if (!translation) return "block";
+  if (!ok || !bin || !isGrepFamilyBinary(bin)) return { kind: "verbatim" };
+  if (mode === "block") return { kind: "block" };
+  if (isScanOnlyBinary(bin)) return { kind: "verbatim" };
+  const translation = bin === "rg"
+    ? translateRg(rest.slice(1))
+    : isTranslatableGrepBinary(bin)
+      ? translateGrep(bin, rest.slice(1))
+      : null;
+  if (!translation) return { kind: "block" };
   if (bin !== "rg" && translation.patterns.some((p) => patternNeedsFallback(p, translation.engine))) {
     return { kind: "verbatim" };
   }
@@ -597,12 +622,20 @@ export function applyBashPolicy(command: string, mode: BashPolicyMode, context?:
   let changed = false;
   for (const segment of segments) {
     const result = policySegment(segment, mode, context?.indexPath);
-    if (result === "block") return { action: "block", reason: BLOCK_REASON };
-    if (result.kind === "rewrite") {
-      changed = true;
-      rendered.push(result.text);
-    } else {
-      rendered.push(segment.trim());
+    switch (result.kind) {
+      case "block":
+        return { action: "block", reason: BLOCK_REASON };
+      case "rewrite":
+        changed = true;
+        rendered.push(result.text);
+        break;
+      case "verbatim":
+        rendered.push(segment.trim());
+        break;
+      default: {
+        const exhaustive: never = result;
+        throw new Error(`Unhandled segment result: ${JSON.stringify(exhaustive)}`);
+      }
     }
   }
   if (!changed) return { action: "allow" };
