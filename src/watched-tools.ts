@@ -10,7 +10,7 @@ export interface ToolPolicyAction {
   code?: string;
 }
 
-function watchedKey(toolName: string, watchedTools: string[]): string | null {
+export function watchedKey(toolName: string, watchedTools: string[]): string | null {
   for (const watched of watchedTools) {
     if (toolName === watched || toolName.endsWith(`__${watched}`)) return watched;
   }

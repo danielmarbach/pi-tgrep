@@ -10,7 +10,7 @@ const GREP_FAMILY = /^(grep|egrep|fgrep|rg|ag|ack|pt)$/;
 const BLOCK_MARKER = "bypasses the tgrep index";
 const NO_RESULT = /^No matches found\.?\s*$/;
 const SHELL_TOOLS = new Set(["bash", "ctx_execute", "ctx_execute_file", "ctx_batch_execute"]);
-const DURATION = /^(\d+)([dhw])$/;
+const DURATION = /^(\d+)([dhmsw])$/;
 
 function expandHome(value) {
 	if (!value) return value;
@@ -34,7 +34,7 @@ function parseArgs(argv) {
 		else throw new Error(`Unknown argument: ${arg}`);
 	}
 	args.sessionsDir = expandHome(args.sessionsDir);
-	if (args.since !== undefined && !DURATION.test(args.since)) throw new Error(`Invalid --since duration: ${args.since} (use e.g. 30d, 24h, 2w)`);
+	if (args.since !== undefined && !DURATION.test(args.since)) throw new Error(`Invalid --since duration: ${args.since} (use e.g. 30d, 12h, 90m, 45s, 2w)`);
 	return args;
 }
 
@@ -52,7 +52,7 @@ Usage:
 Options:
   --sessions-dir <dir>   Session root. Default: ${DEFAULT_SESSIONS_DIR}
   --cwd <substring>      Only include sessions whose cwd contains this text
-  --since <duration>     Only sessions started within this window (e.g. 30d, 24h, 2w)
+  --since <duration>     Only sessions started within this window (e.g. 30d, 12h, 90m, 45s)
   --top <n>              Examples per top-list. Default: 8
   --follow-window <n>    Later tool calls scanned for follow-up behaviour. Default: 3
   --json                 Machine-readable JSON output
@@ -291,6 +291,15 @@ async function analyzeFile(filePath, totals, filters, options) {
 			totals.shellCalls += 1;
 			const text = commandText(call.args);
 			const classified = classifyCommandText(text);
+			const details = result?.details;
+			// the extension stamps translated commands onto the toolResult details;
+			// session-log args stay pre-rewrite, so grep/rg-looking args with a tgrep
+			// stamp are policy translations, not plain grep/rg runs
+			if (classified.shellSearch && details && typeof details === "object" && details.engine === "tgrep") {
+				totals.shellTgrepCalls += 1;
+				bump(totals.tgrepShellCommands, snippet(typeof details.command === "string" && details.command ? details.command : text));
+				continue;
+			}
 			if (classified.shellSearch) {
 				totals.shellSearchCalls += 1;
 				bump(totals.shellSearchCommands, snippet(text));
@@ -361,7 +370,8 @@ function buildOutput(totals, args, options) {
 		},
 		caveats: [
 			"details.engine is only persisted for some grep results; 'indexed' attribution is a lower bound and most calls land in 'unknown'.",
-			"'tgrep' shell commands mix policy-translated greps with model-typed tgrep invocations; the log does not distinguish them.",
+			"Policy-translated shell greps are identified by the toolResult details stamp (engine: tgrep) and counted under tgrepCommands with the rewritten command.",
+			"Sessions recorded before the stamp existed keep the old behavior: translated greps count as plain grep/rg and tgrep-in-shell stays a lower bound.",
 			"Shell classification splits commands naively and reads each segment's primary binary, mirroring the extension's approximation.",
 			"Latency uses session event timestamps (call event -> toolResult event) and includes model-side queueing, not just search time.",
 		],
@@ -427,7 +437,7 @@ async function main() {
 		return;
 	}
 	const options = { followWindow: Number.isFinite(args.followWindow) && args.followWindow > 0 ? args.followWindow : 3 };
-	const sinceMs = args.since ? Date.now() - Number(args.since.slice(0, -1)) * { d: 86_400_000, h: 3_600_000, w: 604_800_000 }[args.since.slice(-1)] : undefined;
+	const sinceMs = args.since ? Date.now() - Number(args.since.slice(0, -1)) * { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000, w: 604_800_000 }[args.since.slice(-1)] : undefined;
 	const filters = { cwd: args.cwd, sinceMs };
 	const totals = createTotals();
 	const files = await listJsonlFiles(args.sessionsDir);

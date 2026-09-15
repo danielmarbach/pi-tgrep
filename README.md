@@ -36,6 +36,9 @@ path into the fast one and closes the side doors.
    - grep/`rg` scan segments (pattern + path present) are transparently translated to `tgrep`
      with quote-preserving re-emission (`'foo|bar'` stays quoted, translated globs are always
      quoted, `sudo`/`env` prefixes survive);
+   - translated bash commands are stamped onto the tool result (`details.engine: "tgrep"`
+     plus the rewritten and original commands), so session logs and `npm run analyze`
+     attribute shell tgrep usage directly;
    - when the index exists, translated commands whose positional paths are all relative get
      `--index-path '<index dir>'` injected (any absolute positional — or an explicit
      `--index-path` — skips the injection); `-e`/`--regexp`/`-f`/`--file` pattern arguments
@@ -158,6 +161,9 @@ node --test test/bash-policy-fallback.test.mjs test/grep-details.test.mjs test/s
 `node scripts/analyze-pi-sessions.mjs` (or `npm run analyze`) mines `~/.pi/agent/sessions/`
 for the real numbers: indexed vs fallback vs builtin grep traffic, zero-result rate, latency
 p50/p95, search→read conversion, and how often the shell policy translates or blocks.
+Translated shell greps are identified by the `details.engine: "tgrep"` stamp the extension
+adds to the bash tool result; sessions recorded before the stamp existed count translated
+greps as plain grep/rg.
 
 See `test/e2e.md` for headless `pi -p` scripts and `test/tgrep-cli-notes.md` for the verified
 tgrep CLI ground truth this implementation relies on.

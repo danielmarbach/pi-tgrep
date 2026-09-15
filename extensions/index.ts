@@ -1,9 +1,9 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isBashToolResult, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { hasIndexPathOverride, loadConfig, resolveIndexPath } from "../src/config.ts";
-import { applyToolCallPolicy } from "../src/watched-tools.ts";
+import { applyToolCallPolicy, watchedKey } from "../src/watched-tools.ts";
 import { createGrepToolOverride } from "../src/grep-tool.ts";
 import { repoRoot, ServerManager } from "../src/server-manager.ts";
 import { findTgrep, resetBinaryCache, status } from "../src/tgrep-client.ts";
@@ -34,6 +34,9 @@ export default function piTgrep(pi: ExtensionAPI) {
   let toolRegistered = false;
   let sessionSeq = 0;
   let cachedIndexPath: string | null | undefined;
+  // toolCallId -> rewritten provenance; session logs persist pre-rewrite args, so the
+  // tool_result details stamp is the only observable trace of a translation
+  const rewritten = new Map<string, { command: string; original: string }>();
 
   const shellIndexPath = async (cwd: string): Promise<string | undefined> => {
     if (cachedIndexPath !== undefined) return cachedIndexPath || undefined;
@@ -105,16 +108,31 @@ export default function piTgrep(pi: ExtensionAPI) {
 
   pi.on("tool_call", async (event, ctx) => {
     const input = event.input as unknown as Record<string, unknown>;
+    const original = watchedKey(event.toolName, cfg.watchedTools) === "bash" && typeof input.command === "string"
+      ? input.command
+      : undefined;
     const context = cfg.bashPolicy === "translate" ? { indexPath: await shellIndexPath(ctx.cwd) } : undefined;
     const result = applyToolCallPolicy(event.toolName, input, cfg.bashPolicy, cfg.watchedTools, context);
     if (result.action === "block") return { block: true, reason: result.reason };
+    if (result.action === "rewrite" && original !== undefined && typeof input.command === "string") {
+      rewritten.set(event.toolCallId, { command: input.command, original });
+    }
     if (result.warned) {
       ctx.ui.notify("pi-tgrep: shell grep bypasses the tgrep index; prefer the grep tool", "warning");
     }
   });
 
+  pi.on("tool_result", async (event) => {
+    const stamp = rewritten.get(event.toolCallId);
+    if (!stamp) return;
+    rewritten.delete(event.toolCallId);
+    if (!isBashToolResult(event)) return;
+    return { details: { ...(event.details ?? {}), engine: "tgrep", command: stamp.command, original: stamp.original } };
+  });
+
   pi.on("session_shutdown", async (_event, ctx) => {
     sessionSeq++;
+    rewritten.clear();
     ctx.ui.setStatus("tgrep", undefined);
     await manager.shutdown();
   });
