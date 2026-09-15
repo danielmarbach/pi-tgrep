@@ -14,6 +14,7 @@ import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { Type, type Static } from "typebox";
+import { hasIndexPathOverride, resolveIndexPath } from "./config.ts";
 import { findTgrep, status } from "./tgrep-client.ts";
 import { repoRoot } from "./server-manager.ts";
 
@@ -53,6 +54,13 @@ interface SearchOutcome {
 
 const DEFAULT_LIMIT = 100;
 
+type FallbackReason = "indexing" | "no-binary" | "error";
+
+interface FallbackInfo {
+  reason: FallbackReason;
+  message?: string;
+}
+
 function isInsideRoot(root: string, target: string): boolean {
   const rel = path.relative(root, target);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
@@ -61,7 +69,7 @@ function isInsideRoot(root: string, target: string): boolean {
 export function buildTgrepArgs(params: GrepParams, searchPath: string, index?: TgrepSpawnIndex): string[] {
   const args = ["--json", "--line-number", "--color=never", "--hidden", "--no-messages"];
   if (index?.indexDirExists && isInsideRoot(index.root, searchPath)) {
-    args.push("--index-path", path.join(index.root, ".tgrep"));
+    args.push("--index-path", resolveIndexPath(index.root));
   }
   if (params.ignoreCase) args.push("-i");
   if (params.literal) args.push("-F");
@@ -187,11 +195,11 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
       const effectiveLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
       const searchPath = path.resolve(ctx.cwd, params.path || ".");
 
-      const delegateToBuiltin = async (): Promise<AgentToolResult<unknown> | null> => {
+      const delegateToBuiltin = async (fallback: FallbackInfo): Promise<AgentToolResult<unknown> | null> => {
         try {
           const builtin = createGrepToolDefinition(ctx.cwd);
           const result = await builtin.execute(toolCallId, params, signal, onUpdate, ctx);
-          return { ...result, details: { engine: "rg-fallback", ...(result.details ?? {}) } };
+          return { ...result, details: { engine: "rg-fallback", fallback, ...(result.details ?? {}) } };
         } catch {
           return null;
         }
@@ -199,7 +207,7 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
 
       const bin = await findTgrep(pi);
       if (!bin) {
-        const fallback = await delegateToBuiltin();
+        const fallback = await delegateToBuiltin({ reason: "no-binary", message: "tgrep binary not found" });
         if (fallback) return fallback;
         throw new Error("tgrep is not available and the ripgrep fallback failed");
       }
@@ -207,14 +215,15 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
       try {
         const root = await repoRoot(ctx.cwd);
         if (root) {
+          const indexDir = resolveIndexPath(root);
           let indexDirExists = false;
           try {
-            indexDirExists = (await stat(path.join(root, ".tgrep"))).isDirectory();
+            indexDirExists = (await stat(indexDir)).isDirectory();
           } catch {}
           index = { root, indexDirExists };
-          const st = await status(pi, root);
+          const st = await status(pi, root, hasIndexPathOverride() ? indexDir : undefined);
           if (st.kind === "server" && !st.indexingComplete) {
-            const fallback = await delegateToBuiltin();
+            const fallback = await delegateToBuiltin({ reason: "indexing", message: "tgrep index still building" });
             if (fallback) return fallback;
           }
         }
@@ -223,7 +232,10 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
       const outcome = await runSearch(bin, params, searchPath, ctx.cwd, effectiveLimit, signal, index);
       if (outcome.aborted) throw new Error("Operation aborted");
       if (outcome.spawnError || (outcome.code !== null && outcome.code !== 0 && outcome.code !== 1 && !outcome.killedDueToLimit)) {
-        const fallback = await delegateToBuiltin();
+        const fallback = await delegateToBuiltin({
+          reason: "error",
+          message: outcome.spawnError?.message ?? (outcome.stderr.trim() || `tgrep exited with code ${outcome.code}`),
+        });
         if (fallback) return fallback;
         if (outcome.spawnError) throw new Error(`Failed to run tgrep: ${outcome.spawnError.message}`);
         throw new Error(outcome.stderr.trim() || `tgrep exited with code ${outcome.code}`);
@@ -263,6 +275,7 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
       if (outcome.killedDueToLimit) {
         notices.push(`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`);
         details.matchLimitReached = effectiveLimit;
+        details.truncated = true;
       }
       if (truncation.truncated) {
         notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);

@@ -13,6 +13,9 @@ import { status, stopServer } from "../src/tgrep-client.ts";
 
 const execFileP = promisify(execFile);
 
+// An exported PI_TGREP_INDEX_PATH would redirect the fixture server and the --index-path assertions.
+delete process.env.PI_TGREP_INDEX_PATH;
+
 const pi = {
   async exec(command, args, options = {}) {
     try {
@@ -70,7 +73,8 @@ function runPolicyTests() {
   });
   policyCase("zgrep needle x.log", "translate", { action: "allow" });
   policyCase("git log --grep needle", "translate", { action: "allow" });
-  policyCase("grep 'a\\(b\\)' f", "translate", { action: "block" });
+  // BRE-only patterns run verbatim: original grep preserves exact semantics
+  policyCase("grep 'a\\(b\\)' f", "translate", { action: "allow" });
   policyCase("rg --files", "translate", { action: "rewrite", command: "tgrep --files" });
   policyCase("sudo grep -i needle /etc/hosts", "translate", {
     action: "rewrite",
@@ -80,7 +84,8 @@ function runPolicyTests() {
   policyCase("rg -n needle .", "off", { action: "allow" });
   policyCase("grep -rn needle .", "warn", { action: "warn", command: "grep -rn needle ." });
   policyCase("ls src/", "translate", { action: "allow" });
-  policyCase("ag -l needle", "translate", { action: "block" });
+  // ag/ack/pt run untranslated: flag semantics diverge from rg/tgrep, slow but correct
+  policyCase("ag -l needle", "translate", { action: "allow" });
   policyCase("grep --exclude-dir=node_modules -r needle .", "translate", {
     action: "rewrite",
     command: "tgrep -g '!node_modules/**' needle .",

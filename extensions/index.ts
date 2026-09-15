@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { loadConfig } from "../src/config.ts";
+import { hasIndexPathOverride, loadConfig, resolveIndexPath } from "../src/config.ts";
 import { applyToolCallPolicy } from "../src/watched-tools.ts";
 import { createGrepToolOverride } from "../src/grep-tool.ts";
 import { repoRoot, ServerManager } from "../src/server-manager.ts";
@@ -39,7 +39,7 @@ export default function piTgrep(pi: ExtensionAPI) {
     if (cachedIndexPath !== undefined) return cachedIndexPath || undefined;
     const root = await repoRoot(cwd);
     if (!root) return undefined;
-    const dir = path.join(root, ".tgrep");
+    const dir = resolveIndexPath(root);
     try {
       if (!(await stat(dir)).isDirectory()) return undefined;
     } catch {
@@ -127,7 +127,7 @@ export default function piTgrep(pi: ExtensionAPI) {
         ctx.ui.notify("tgrep: not a git repo", "info");
         return;
       }
-      const st = await status(pi, root);
+      const st = await status(pi, root, hasIndexPathOverride() ? resolveIndexPath(root) : undefined);
       let detail = manager.describe(st);
       if (st.kind === "server") detail += `\n  PID: ${st.pid}  Port: ${st.port}  Watcher: ${st.watcherActive ? "active" : "off"}  Indexing: ${st.indexingComplete ? "complete" : "in progress"}`;
       ctx.ui.notify(detail, "info");

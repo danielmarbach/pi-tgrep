@@ -1,6 +1,18 @@
+import path from "node:path";
+
 export type AutoInstallPolicy = "ask" | "never" | "always";
 export type BashPolicyMode = "translate" | "block" | "warn" | "off";
 export type SessionScope = "repo" | "session";
+
+// relative PI_TGREP_INDEX_PATH values anchor to the repo root so server (cwd=root) and client (cwd=subdir) resolve identically
+export function resolveIndexPath(root: string): string {
+  const override = process.env.PI_TGREP_INDEX_PATH;
+  return override ? path.resolve(root, override) : path.join(root, ".tgrep");
+}
+
+export function hasIndexPathOverride(): boolean {
+  return Boolean(process.env.PI_TGREP_INDEX_PATH);
+}
 
 const DEFAULT_WATCHED_TOOLS = ["bash", "ctx_execute", "ctx_execute_file", "ctx_batch_execute"];
 

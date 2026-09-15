@@ -35,9 +35,9 @@ function parseNumber(text: string, pattern: RegExp): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-export async function readServeJson(root: string): Promise<ServeInfo | null> {
+export async function readServeJson(root: string, indexDir?: string): Promise<ServeInfo | null> {
   try {
-    const raw = await readFile(path.join(root, ".tgrep", "serve.json"), "utf-8");
+    const raw = await readFile(path.join(indexDir ?? path.join(root, ".tgrep"), "serve.json"), "utf-8");
     const parsed = JSON.parse(raw) as { pid?: unknown; port?: unknown };
     if (typeof parsed.pid === "number" && typeof parsed.port === "number") {
       return { pid: parsed.pid, port: parsed.port };
@@ -55,17 +55,18 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-async function statusText(pi: ExtensionAPI, root: string): Promise<string> {
+async function statusText(pi: ExtensionAPI, root: string, indexDir?: string): Promise<string> {
   try {
-    const result = await pi.exec("tgrep", ["status", root], { timeout: 15_000 });
+    const args = indexDir ? ["status", root, "--index-path", indexDir] : ["status", root];
+    const result = await pi.exec("tgrep", args, { timeout: 15_000 });
     return result.stdout;
   } catch {
     return "";
   }
 }
 
-export async function status(pi: ExtensionAPI, root: string): Promise<TgrepStatus> {
-  let text = await statusText(pi, root);
+export async function status(pi: ExtensionAPI, root: string, indexDir?: string): Promise<TgrepStatus> {
+  let text = await statusText(pi, root, indexDir);
   for (let attempt = 0; attempt < 2; attempt++) {
     if (/^Server status for/m.test(text)) {
       return {
@@ -78,23 +79,24 @@ export async function status(pi: ExtensionAPI, root: string): Promise<TgrepStatu
       };
     }
     if (!/^Index status for/m.test(text)) return { kind: "none" };
-    const serve = await readServeJson(root);
+    const serve = await readServeJson(root, indexDir);
     if (!serve || !pidAlive(serve.pid)) {
       return { kind: "index", files: parseNumber(text, /Files:\s*(\d+)/) ?? 0 };
     }
-    text = await statusText(pi, root);
+    text = await statusText(pi, root, indexDir);
   }
-  const serve = await readServeJson(root);
+  const serve = await readServeJson(root, indexDir);
   if (serve && pidAlive(serve.pid)) {
     return { kind: "server", pid: serve.pid, port: serve.port, files: 0, watcherActive: false, indexingComplete: false };
   }
   return { kind: "index", files: parseNumber(text, /Files:\s*(\d+)/) ?? 0 };
 }
 
-export async function stopServer(pi: ExtensionAPI, root: string): Promise<boolean> {
-  const serve = await readServeJson(root);
+export async function stopServer(pi: ExtensionAPI, root: string, indexDir?: string): Promise<boolean> {
+  const serveJsonPath = path.join(indexDir ?? path.join(root, ".tgrep"), "serve.json");
+  const serve = await readServeJson(root, indexDir);
   if (!serve || !pidAlive(serve.pid)) {
-    await rm(path.join(root, ".tgrep", "serve.json"), { force: true }).catch(() => {});
+    await rm(serveJsonPath, { force: true }).catch(() => {});
     return false;
   }
   let isTgrep = false;
@@ -103,7 +105,7 @@ export async function stopServer(pi: ExtensionAPI, root: string): Promise<boolea
     isTgrep = ps.code === 0 && /(^|\/)tgrep(\s|$)/.test(ps.stdout.trim());
   } catch {}
   if (!isTgrep) {
-    await rm(path.join(root, ".tgrep", "serve.json"), { force: true }).catch(() => {});
+    await rm(serveJsonPath, { force: true }).catch(() => {});
     return false;
   }
   try {
@@ -114,13 +116,13 @@ export async function stopServer(pi: ExtensionAPI, root: string): Promise<boolea
   for (let waited = 0; waited < 3_000; waited += 100) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     if (!pidAlive(serve.pid)) {
-      await rm(path.join(root, ".tgrep", "serve.json"), { force: true }).catch(() => {});
+      await rm(serveJsonPath, { force: true }).catch(() => {});
       return true;
     }
   }
   try {
     process.kill(serve.pid, "SIGKILL");
   } catch {}
-  await rm(path.join(root, ".tgrep", "serve.json"), { force: true }).catch(() => {});
+  await rm(serveJsonPath, { force: true }).catch(() => {});
   return true;
 }

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TgrepConfig } from "./config.ts";
+import { hasIndexPathOverride, resolveIndexPath } from "./config.ts";
 import { findTgrep, status, stopServer, type TgrepStatus } from "./tgrep-client.ts";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -57,14 +58,20 @@ export class ServerManager {
     this.cfg = cfg;
   }
 
+  // explicit override only: tgrep's default discovery must stay untouched when PI_TGREP_INDEX_PATH is unset
+  private indexDir(root: string): string | undefined {
+    return hasIndexPathOverride() ? resolveIndexPath(root) : undefined;
+  }
+
   async ensureRunning(root: string): Promise<TgrepStatus> {
-    let st = await status(this.pi, root);
+    const indexDir = this.indexDir(root);
+    let st = await status(this.pi, root, indexDir);
     if (st.kind === "server") return st;
     const bin = await findTgrep(this.pi);
     if (!bin) return st;
     await ensureGitExclude(root);
     const args = ["serve", root, ...this.cfg.serveArgs];
-    if (this.cfg.indexPath) args.push("--index-path", this.cfg.indexPath);
+    if (this.cfg.indexPath) args.push("--index-path", resolveIndexPath(root));
     try {
       const child = spawn(bin, args, { cwd: root, detached: true, stdio: "ignore" });
       child.unref();
@@ -75,7 +82,7 @@ export class ServerManager {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       await sleep(250);
-      st = await status(this.pi, root);
+      st = await status(this.pi, root, indexDir);
       if (st.kind === "server") return st;
     }
     return st;
@@ -92,10 +99,11 @@ export class ServerManager {
   }
 
   async monitor(root: string, onUpdate: (line: string) => void, maxMs = 120_000): Promise<void> {
+    const indexDir = this.indexDir(root);
     const deadline = Date.now() + maxMs;
     let noneCount = 0;
     for (;;) {
-      const st = await status(this.pi, root);
+      const st = await status(this.pi, root, indexDir);
       onUpdate(this.describe(st));
       if (st.kind === "server" && st.indexingComplete) return;
       if (st.kind === "index") return;
@@ -112,12 +120,15 @@ export class ServerManager {
 
   async stop(root: string): Promise<boolean> {
     this.roots.delete(root);
-    return stopServer(this.pi, root);
+    return stopServer(this.pi, root, this.indexDir(root));
   }
 
   async reindex(root: string): Promise<string> {
+    const indexDir = this.indexDir(root);
     await this.stop(root);
-    const res = await this.pi.exec("tgrep", ["index", root], { timeout: 600_000 });
+    const args = ["index", root];
+    if (indexDir) args.push("--index-path", indexDir);
+    const res = await this.pi.exec("tgrep", args, { timeout: 600_000 });
     await this.ensureRunning(root);
     return res.code === 0 ? `reindexed ${root}` : `index failed: ${res.stderr.trim().slice(0, 300)}`;
   }
@@ -125,7 +136,7 @@ export class ServerManager {
   async shutdown(): Promise<void> {
     if (this.cfg.scope !== "session") return;
     for (const root of this.roots) {
-      await stopServer(this.pi, root);
+      await stopServer(this.pi, root, this.indexDir(root));
     }
     this.roots.clear();
   }

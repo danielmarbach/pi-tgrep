@@ -56,7 +56,7 @@ const RG_LONG_ARG = new Set(
 
 const GREP_SHORT_KEEP: Record<string, string> = {
   n: "-n", i: "-i", F: "-F", l: "-l", c: "-c", v: "-v", q: "-q", o: "-o", w: "-w", H: "-H",
-  a: "-a", b: "-b", x: "-x", Z: "-0", y: "-i", h: "-I",
+  a: "-a", b: "-b", x: "-x", Z: "-0", y: "-i", h: "-I", P: "-P",
 };
 const GREP_SHORT_DROP = new Set(["r", "R", "E", "s", "T", "I", "V", "G"]);
 const GREP_SHORT_ARG: Record<string, string> = { A: "-A", B: "-B", C: "-C", m: "-m", e: "-e", f: "-f", L: "--files-without-match" };
@@ -72,16 +72,24 @@ const GREP_LONG_ARG: Record<string, string> = {
   "--regexp": "-e", "--file": "-f",
 };
 const GREP_LONG_DROP = new Set([
-  "--recursive", "--dereference-recursive", "--extended-regexp", "--mmap",
+  "--recursive", "--dereference-recursive", "--extended-regexp", "--basic-regexp", "--mmap",
   "--initial-tab", "--version", "--help", "--no-group-separator", "--group-separator",
 ]);
 const GREP_LONG_BLOCK = new Set([
-  "--basic-regexp", "--binary-files", "--devices", "--directories", "--label", "--null-data",
+  "--binary-files", "--devices", "--directories", "--label", "--null-data",
   "--unix-byte-offsets", "--group-directories-first", "--dereference-command-line",
   "--no-dereference-command-line", "--dereference-command-line-symlink-to-dir", "--exclude-directories",
 ]);
 const BRE_ONLY_PATTERN = /\\[(){}+?|1-9]|\\<|\\>/;
 const UNSAFE_TOKEN_PATTERN = /[\s|&;<>()$`*"'?[\]{}~#]/;
+const BACKREF_PATTERN = /\\[1-9]/;
+
+type GrepEngine = "fixed" | "ere" | "pcre" | "bre";
+
+function patternNeedsFallback(pattern: string, engine: GrepEngine): boolean {
+  if (engine === "fixed" || engine === "pcre") return false;
+  return (engine === "bre" ? BRE_ONLY_PATTERN : BACKREF_PATTERN).test(pattern);
+}
 
 interface Token {
   text: string;
@@ -96,6 +104,9 @@ interface OutToken {
 interface Translation {
   tokens: OutToken[];
   positionals: string[];
+  patternFlag: boolean;
+  patterns: string[];
+  engine: GrepEngine;
 }
 
 function tokenizeDetailed(command: string): Token[] | null {
@@ -334,6 +345,7 @@ function expandShortFlags(
 function translateRg(tokens: string[]): Translation | null {
   const out: OutToken[] = [];
   const positionals: string[] = [];
+  let patternFlag = false;
   let i = 0;
   while (i < tokens.length) {
     const t = tokens[i]!;
@@ -342,12 +354,13 @@ function translateRg(tokens: string[]): Translation | null {
         out.push({ text: rest });
         positionals.push(rest);
       }
-      return { tokens: out, positionals };
+      return { tokens: out, positionals, patternFlag, patterns: [], engine: "ere" };
     }
     if (t.startsWith("--")) {
       const eq = t.indexOf("=");
       const name = eq === -1 ? t : t.slice(0, eq);
       if (!RG_LONG.has(name)) return null;
+      if (name === "--regexp" || name === "--file") patternFlag = true;
       out.push({ text: t });
       if (eq === -1 && RG_LONG_ARG.has(name)) {
         const value = tokens[++i];
@@ -365,18 +378,22 @@ function translateRg(tokens: string[]): Translation | null {
       if (!result) return null;
       out.push(...result.emitted.map((e) => ({ text: e })));
       i += result.consumed;
+      if (result.emitted.includes("-e") || result.emitted.includes("-f")) patternFlag = true;
     } else {
       out.push({ text: t });
       positionals.push(t);
     }
     i++;
   }
-  return { tokens: out, positionals };
+  return { tokens: out, positionals, patternFlag, patterns: [], engine: "ere" };
 }
 
 function translateGrep(bin: string, tokens: string[]): Translation | null {
   const out: OutToken[] = [];
   const positionals: string[] = [];
+  const ePatterns: string[] = [];
+  let patternFlag = false;
+  let engine: GrepEngine = bin === "egrep" ? "ere" : bin === "fgrep" ? "fixed" : "bre";
   if (bin === "fgrep") out.push({ text: "-F" });
   let i = 0;
   while (i < tokens.length) {
@@ -389,6 +406,14 @@ function translateGrep(bin: string, tokens: string[]): Translation | null {
       const eq = t.indexOf("=");
       const name = eq === -1 ? t : t.slice(0, eq);
       const value = eq === -1 ? undefined : t.slice(eq + 1);
+      if (name === "--fixed-strings") engine = "fixed";
+      else if (name === "--extended-regexp") engine = "ere";
+      else if (name === "--perl-regexp") engine = "pcre";
+      else if (name === "--basic-regexp") engine = "bre";
+      if (name === "--regexp" || name === "--file") {
+        patternFlag = true;
+        if (name === "--regexp" && value !== undefined) ePatterns.push(value);
+      }
       if (name === "--include" && value !== undefined) {
         out.push({ text: "-g" }, { text: value, quote: true });
       } else if (name === "--exclude" && value !== undefined) {
@@ -404,6 +429,7 @@ function translateGrep(bin: string, tokens: string[]): Translation | null {
         else {
           const next = tokens[++i];
           if (next === undefined) return null;
+          if (name === "--regexp") ePatterns.push(next);
           out.push({ text: GREP_LONG_ARG[name]! }, { text: next });
         }
       } else if (GREP_LONG_DROP.has(name)) {
@@ -417,6 +443,10 @@ function translateGrep(bin: string, tokens: string[]): Translation | null {
       const result = expandShortFlags(
         t.slice(1),
         (ch) => {
+          if (ch === "F") engine = "fixed";
+          else if (ch === "E") engine = "ere";
+          else if (ch === "P") engine = "pcre";
+          else if (ch === "G") engine = "bre";
           if (GREP_SHORT_KEEP[ch]) return GREP_SHORT_KEEP[ch]!;
           if (GREP_SHORT_ARG[ch]) return "";
           if (GREP_SHORT_DROP.has(ch)) return "";
@@ -429,14 +459,19 @@ function translateGrep(bin: string, tokens: string[]): Translation | null {
       if (!result) return null;
       if (result.emitted.length > 0) out.push(...result.emitted.map((e) => ({ text: e })));
       i += result.consumed;
+      for (let k = 0; k < result.emitted.length; k++) {
+        const emitted = result.emitted[k]!;
+        if (emitted === "-e" || emitted === "-f") patternFlag = true;
+        if (emitted === "-e" && result.emitted[k + 1] !== undefined) ePatterns.push(result.emitted[k + 1]!);
+      }
     } else {
       positionals.push(t);
     }
     i++;
   }
-  if (positionals.length > 0 && BRE_ONLY_PATTERN.test(positionals[0]!)) return null;
+  const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!] : [];
   for (const p of positionals) out.push({ text: p });
-  return { tokens: out, positionals };
+  return { tokens: out, positionals, patternFlag, patterns, engine };
 }
 
 function emitToken(text: string, forceQuote: boolean): string {
@@ -455,17 +490,20 @@ function policySegment(
   const { prefixes, rest, ok } = stripPrefixes(tokens.map((t) => t.text));
   const bin = rest[0];
   if (!ok || !bin || !FAMILY_TOKEN.test(bin)) return { kind: "verbatim" };
-  if (SCAN_ONLY_FAMILY.test(bin)) return "block";
   if (mode === "block") return "block";
+  if (SCAN_ONLY_FAMILY.test(bin)) return { kind: "verbatim" };
   const translation = bin === "rg" ? translateRg(rest.slice(1)) : translateGrep(bin, rest.slice(1));
   if (!translation) return "block";
+  if (bin !== "rg" && translation.patterns.some((p) => patternNeedsFallback(p, translation.engine))) {
+    return { kind: "verbatim" };
+  }
   const forceScan = bin === "rg" && rest.includes("--files");
-  if (translation.positionals.length <= 1 && !forceScan) return { kind: "verbatim" };
+  const minPositionals = translation.patternFlag ? 1 : 2;
+  if (translation.positionals.length < minPositionals && !forceScan) return { kind: "verbatim" };
   const rendered = ["tgrep"];
   const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
-  const allPathsRelative = translation.positionals
-    .slice(1)
-    .every((p) => !p.startsWith("/") && !p.startsWith("~"));
+  const paths = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
+  const allPathsRelative = paths.every((p) => !p.startsWith("/") && !p.startsWith("~"));
   if (indexPath && !hasIndexPath && allPathsRelative) {
     rendered.push("--index-path", emitToken(indexPath, true));
   }
