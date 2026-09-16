@@ -40,67 +40,158 @@ export const BLOCK_REASON =
   "to the repo index. To run tgrep yourself, pass --index-path <repo>/.tgrep so it uses the index " +
   "from any directory; a bare run only looks for the index next to the searched path.";
 
-const RG_SHORT: Set<string> = new Set(
-  "isSFwvefUlcoEmqgtTaABCHInNMpbxjL0urp".split(""),
-);
-const RG_SHORT_ARG = new Set(["e", "f", "m", "g", "t", "T", "A", "B", "C", "M", "E", "j", "r"]);
-const RG_LONG: Set<string> = new Set(
-  [
-    "ignore-case", "case-sensitive", "smart-case", "fixed-strings", "word-regexp", "invert-match",
-    "regexp", "file", "multiline", "multiline-dotall", "files-with-matches", "files-without-match",
-    "count", "only-matching", "max-count", "files", "quiet", "glob", "iglob", "glob-case-insensitive",
-    "type", "type-not", "type-add", "type-clear", "type-list", "max-filesize", "no-max-filesize",
-    "encoding", "no-encoding", "text", "after-context", "before-context", "context", "with-filename",
-    "no-filename", "line-number", "no-line-number", "heading", "no-heading", "json", "vimgrep",
-    "color", "null", "trim", "stats", "no-index", "index-path", "hidden", "no-ignore", "follow",
-    "no-messages", "binary", "line-regexp", "pcre2", "engine", "pcre2-version", "no-unicode",
-    "regex-size-limit", "dfa-size-limit", "replace", "passthru", "stop-on-nonmatch", "column",
-    "no-column", "byte-offset", "max-columns", "max-columns-preview", "count-matches", "include-zero",
-    "pretty", "context-separator", "no-context-separator", "field-match-separator",
-    "field-context-separator", "path-separator", "sort", "sortr", "sort-files", "max-depth",
-    "one-file-system", "ignore-file", "ignore-file-case-insensitive", "no-ignore-dot",
-    "no-ignore-exclude", "no-ignore-files", "no-ignore-global", "no-ignore-messages",
-    "no-ignore-parent", "no-ignore-vcs", "no-require-git", "threads", "mmap", "no-mmap",
-    "line-buffered", "block-buffered", "no-config", "colors", "crlf", "no-crlf", "debug", "trace",
-    "help", "version",
-  ].map((name) => `--${name}`),
-);
-const RG_LONG_ARG = new Set(
-  [
-    "regexp", "file", "max-count", "glob", "iglob", "type", "type-not", "type-add", "type-clear",
-    "max-filesize", "encoding", "after-context", "before-context", "context", "color", "index-path",
-    "engine", "regex-size-limit", "dfa-size-limit", "replace", "max-columns", "context-separator",
-    "field-match-separator", "field-context-separator", "path-separator", "sort", "sortr",
-    "max-depth", "ignore-file", "threads", "colors",
-  ].map((name) => `--${name}`),
-);
+/** One classification per flag: a flag that consumes a value must be `arg`, so the "recognized
+ * flag whose value silently becomes a positional" misparse class is structurally impossible. */
+type RgShortSpec = { kind: "flag" } | { kind: "arg" };
+type RgLongSpec = { kind: "flag" } | { kind: "arg"; patternSource?: boolean };
 
-const GREP_SHORT_KEEP: Record<string, string> = {
-  n: "-n", i: "-i", F: "-F", l: "-l", c: "-c", v: "-v", q: "-q", o: "-o", w: "-w", H: "-H",
-  a: "-a", b: "-b", x: "-x", Z: "-0", y: "-i", h: "-I", P: "-P",
+const RG_SHORT_SPECS: Record<string, RgShortSpec> = {
+  i: { kind: "flag" }, s: { kind: "flag" }, S: { kind: "flag" }, F: { kind: "flag" },
+  w: { kind: "flag" }, v: { kind: "flag" }, U: { kind: "flag" }, l: { kind: "flag" },
+  c: { kind: "flag" }, o: { kind: "flag" }, q: { kind: "flag" }, a: { kind: "flag" },
+  H: { kind: "flag" }, I: { kind: "flag" }, n: { kind: "flag" }, N: { kind: "flag" },
+  p: { kind: "flag" }, b: { kind: "flag" }, x: { kind: "flag" }, L: { kind: "flag" },
+  "0": { kind: "flag" }, u: { kind: "flag" },
+  e: { kind: "arg" }, f: { kind: "arg" }, m: { kind: "arg" }, g: { kind: "arg" },
+  t: { kind: "arg" }, T: { kind: "arg" }, A: { kind: "arg" }, B: { kind: "arg" },
+  C: { kind: "arg" }, M: { kind: "arg" }, E: { kind: "arg" }, j: { kind: "arg" },
+  r: { kind: "arg" },
 };
-const GREP_SHORT_DROP = new Set(["r", "R", "E", "s", "T", "I", "V", "G"]);
-const GREP_SHORT_ARG: Record<string, string> = { A: "-A", B: "-B", C: "-C", m: "-m", e: "-e", f: "-f", L: "--files-without-match" };
-const GREP_LONG_SIMPLE: Record<string, string> = {
-  "--ignore-case": "-i", "--fixed-strings": "-F", "--line-number": "-n",
-  "--files-with-matches": "-l", "--files-without-match": "--files-without-match", "--count": "-c",
-  "--invert-match": "-v", "--quiet": "-q", "--silent": "-q", "--only-matching": "-o",
-  "--word-regexp": "-w", "--with-filename": "-H", "--no-filename": "-I", "--byte-offset": "-b",
-  "--line-regexp": "-x", "--text": "-a", "--perl-regexp": "-P", "--null": "-0",
+
+const RG_LONG_SPECS: Record<`--${string}`, RgLongSpec> = {
+  "--ignore-case": { kind: "flag" }, "--case-sensitive": { kind: "flag" },
+  "--smart-case": { kind: "flag" }, "--fixed-strings": { kind: "flag" },
+  "--word-regexp": { kind: "flag" }, "--invert-match": { kind: "flag" },
+  "--multiline": { kind: "flag" }, "--multiline-dotall": { kind: "flag" },
+  "--files-with-matches": { kind: "flag" }, "--files-without-match": { kind: "flag" },
+  "--count": { kind: "flag" }, "--only-matching": { kind: "flag" },
+  "--files": { kind: "flag" }, "--quiet": { kind: "flag" },
+  "--glob-case-insensitive": { kind: "flag" }, "--type-list": { kind: "flag" },
+  "--no-max-filesize": { kind: "flag" }, "--no-encoding": { kind: "flag" },
+  "--text": { kind: "flag" }, "--with-filename": { kind: "flag" },
+  "--no-filename": { kind: "flag" }, "--line-number": { kind: "flag" },
+  "--no-line-number": { kind: "flag" }, "--heading": { kind: "flag" },
+  "--no-heading": { kind: "flag" }, "--json": { kind: "flag" }, "--vimgrep": { kind: "flag" },
+  "--null": { kind: "flag" }, "--trim": { kind: "flag" }, "--stats": { kind: "flag" },
+  "--no-index": { kind: "flag" }, "--hidden": { kind: "flag" }, "--no-ignore": { kind: "flag" },
+  "--follow": { kind: "flag" }, "--no-messages": { kind: "flag" }, "--binary": { kind: "flag" },
+  "--line-regexp": { kind: "flag" }, "--pcre2": { kind: "flag" },
+  "--pcre2-version": { kind: "flag" }, "--no-unicode": { kind: "flag" },
+  "--passthru": { kind: "flag" }, "--stop-on-nonmatch": { kind: "flag" },
+  "--column": { kind: "flag" }, "--no-column": { kind: "flag" }, "--byte-offset": { kind: "flag" },
+  "--max-columns-preview": { kind: "flag" }, "--count-matches": { kind: "flag" },
+  "--include-zero": { kind: "flag" }, "--pretty": { kind: "flag" },
+  "--no-context-separator": { kind: "flag" }, "--sort-files": { kind: "flag" },
+  "--one-file-system": { kind: "flag" },
+  "--ignore-file-case-insensitive": { kind: "flag" }, "--no-ignore-dot": { kind: "flag" },
+  "--no-ignore-exclude": { kind: "flag" }, "--no-ignore-files": { kind: "flag" },
+  "--no-ignore-global": { kind: "flag" }, "--no-ignore-messages": { kind: "flag" },
+  "--no-ignore-parent": { kind: "flag" }, "--no-ignore-vcs": { kind: "flag" },
+  "--no-require-git": { kind: "flag" }, "--mmap": { kind: "flag" }, "--no-mmap": { kind: "flag" },
+  "--line-buffered": { kind: "flag" }, "--block-buffered": { kind: "flag" },
+  "--no-config": { kind: "flag" }, "--crlf": { kind: "flag" }, "--no-crlf": { kind: "flag" },
+  "--debug": { kind: "flag" }, "--trace": { kind: "flag" },
+  "--help": { kind: "flag" }, "--version": { kind: "flag" },
+  "--regexp": { kind: "arg", patternSource: true },
+  "--file": { kind: "arg", patternSource: true },
+  "--max-count": { kind: "arg" }, "--glob": { kind: "arg" }, "--iglob": { kind: "arg" },
+  "--type": { kind: "arg" }, "--type-not": { kind: "arg" }, "--type-add": { kind: "arg" },
+  "--type-clear": { kind: "arg" }, "--max-filesize": { kind: "arg" },
+  "--encoding": { kind: "arg" }, "--after-context": { kind: "arg" },
+  "--before-context": { kind: "arg" }, "--context": { kind: "arg" },
+  "--color": { kind: "arg" }, "--index-path": { kind: "arg" }, "--engine": { kind: "arg" },
+  "--regex-size-limit": { kind: "arg" }, "--dfa-size-limit": { kind: "arg" },
+  "--replace": { kind: "arg" }, "--max-columns": { kind: "arg" },
+  "--context-separator": { kind: "arg" },
+  "--field-match-separator": { kind: "arg" },
+  "--field-context-separator": { kind: "arg" }, "--path-separator": { kind: "arg" },
+  "--sort": { kind: "arg" }, "--sortr": { kind: "arg" }, "--max-depth": { kind: "arg" },
+  "--ignore-file": { kind: "arg" }, "--threads": { kind: "arg" }, "--colors": { kind: "arg" },
 };
-const GREP_LONG_ARG: Record<string, string> = {
-  "--after-context": "-A", "--before-context": "-B", "--context": "-C", "--max-count": "-m",
-  "--regexp": "-e", "--file": "-f",
+
+type GrepShortSpec =
+  | { kind: "emit"; to: string; engine?: GrepEngine }
+  | { kind: "arg"; to: string }
+  | { kind: "drop"; engine?: GrepEngine };
+
+const GREP_SHORT_SPECS: Record<string, GrepShortSpec> = {
+  n: { kind: "emit", to: "-n" }, i: { kind: "emit", to: "-i" },
+  F: { kind: "emit", to: "-F", engine: "fixed" }, l: { kind: "emit", to: "-l" },
+  c: { kind: "emit", to: "-c" }, v: { kind: "emit", to: "-v" },
+  q: { kind: "emit", to: "-q" }, o: { kind: "emit", to: "-o" },
+  w: { kind: "emit", to: "-w" }, H: { kind: "emit", to: "-H" },
+  a: { kind: "emit", to: "-a" }, b: { kind: "emit", to: "-b" },
+  x: { kind: "emit", to: "-x" }, Z: { kind: "emit", to: "-0" },
+  y: { kind: "emit", to: "-i" }, h: { kind: "emit", to: "-I" },
+  P: { kind: "emit", to: "-P", engine: "pcre" },
+  A: { kind: "arg", to: "-A" }, B: { kind: "arg", to: "-B" },
+  C: { kind: "arg", to: "-C" }, m: { kind: "arg", to: "-m" },
+  e: { kind: "arg", to: "-e" }, f: { kind: "arg", to: "-f" },
+  L: { kind: "arg", to: "--files-without-match" },
+  r: { kind: "drop" }, R: { kind: "drop" }, s: { kind: "drop" },
+  T: { kind: "drop" }, I: { kind: "drop" }, V: { kind: "drop" },
+  E: { kind: "drop", engine: "ere" }, G: { kind: "drop", engine: "bre" },
 };
-const GREP_LONG_DROP = new Set([
-  "--recursive", "--dereference-recursive", "--extended-regexp", "--basic-regexp", "--mmap",
-  "--initial-tab", "--version", "--help", "--no-group-separator", "--group-separator",
-]);
-const GREP_LONG_BLOCK = new Set([
-  "--binary-files", "--devices", "--directories", "--label", "--null-data",
-  "--unix-byte-offsets", "--group-directories-first", "--dereference-command-line",
-  "--no-dereference-command-line", "--dereference-command-line-symlink-to-dir", "--exclude-directories",
-]);
+
+type GrepLongSpec =
+  | { kind: "emit"; to: string; engine?: GrepEngine }
+  | { kind: "arg"; to: string; patternSource?: "regexp" | "file" }
+  | { kind: "drop"; engine?: GrepEngine }
+  | { kind: "glob"; mode: "include" | "exclude" | "exclude-dir" }
+  | { kind: "color" }
+  | { kind: "block" };
+
+const GREP_LONG_SPECS: Record<`--${string}`, GrepLongSpec> = {
+  "--ignore-case": { kind: "emit", to: "-i" },
+  "--fixed-strings": { kind: "emit", to: "-F", engine: "fixed" },
+  "--line-number": { kind: "emit", to: "-n" },
+  "--files-with-matches": { kind: "emit", to: "-l" },
+  "--files-without-match": { kind: "emit", to: "--files-without-match" },
+  "--count": { kind: "emit", to: "-c" },
+  "--invert-match": { kind: "emit", to: "-v" },
+  "--quiet": { kind: "emit", to: "-q" },
+  "--silent": { kind: "emit", to: "-q" },
+  "--only-matching": { kind: "emit", to: "-o" },
+  "--word-regexp": { kind: "emit", to: "-w" },
+  "--with-filename": { kind: "emit", to: "-H" },
+  "--no-filename": { kind: "emit", to: "-I" },
+  "--byte-offset": { kind: "emit", to: "-b" },
+  "--line-regexp": { kind: "emit", to: "-x" },
+  "--text": { kind: "emit", to: "-a" },
+  "--perl-regexp": { kind: "emit", to: "-P", engine: "pcre" },
+  "--null": { kind: "emit", to: "-0" },
+  "--after-context": { kind: "arg", to: "-A" },
+  "--before-context": { kind: "arg", to: "-B" },
+  "--context": { kind: "arg", to: "-C" },
+  "--max-count": { kind: "arg", to: "-m" },
+  "--regexp": { kind: "arg", to: "-e", patternSource: "regexp" },
+  "--file": { kind: "arg", to: "-f", patternSource: "file" },
+  "--include": { kind: "glob", mode: "include" },
+  "--exclude": { kind: "glob", mode: "exclude" },
+  "--exclude-dir": { kind: "glob", mode: "exclude-dir" },
+  "--color": { kind: "color" },
+  "--recursive": { kind: "drop" },
+  "--dereference-recursive": { kind: "drop" },
+  "--extended-regexp": { kind: "drop", engine: "ere" },
+  "--basic-regexp": { kind: "drop", engine: "bre" },
+  "--mmap": { kind: "drop" },
+  "--initial-tab": { kind: "drop" },
+  "--version": { kind: "drop" },
+  "--help": { kind: "drop" },
+  "--no-group-separator": { kind: "drop" },
+  "--group-separator": { kind: "drop" },
+  "--binary-files": { kind: "block" },
+  "--devices": { kind: "block" },
+  "--directories": { kind: "block" },
+  "--label": { kind: "block" },
+  "--null-data": { kind: "block" },
+  "--unix-byte-offsets": { kind: "block" },
+  "--group-directories-first": { kind: "block" },
+  "--dereference-command-line": { kind: "block" },
+  "--no-dereference-command-line": { kind: "block" },
+  "--dereference-command-line-symlink-to-dir": { kind: "block" },
+  "--exclude-directories": { kind: "block" },
+};
 const BRE_ONLY_PATTERN = /\\[(){}+?|1-9]|\\<|\\>/;
 const UNSAFE_TOKEN_PATTERN = /[\s\\|&;<>()$`*"'?[\]{}~#]/;
 const BACKREF_PATTERN = /\\[1-9]/;
@@ -385,11 +476,12 @@ function translateRg(tokens: string[]): Translation | null {
     }
     if (t.startsWith("--")) {
       const eq = t.indexOf("=");
-      const name = eq === -1 ? t : t.slice(0, eq);
-      if (!RG_LONG.has(name)) return null;
-      if (name === "--regexp" || name === "--file") patternFlag = true;
+      const name = (eq === -1 ? t : t.slice(0, eq)) as `--${string}`;
+      const spec = RG_LONG_SPECS[name];
+      if (!spec) return null;
+      if (spec.kind === "arg" && spec.patternSource) patternFlag = true;
       out.push({ text: t });
-      if (eq === -1 && RG_LONG_ARG.has(name)) {
+      if (eq === -1 && spec.kind === "arg") {
         const value = tokens[++i];
         if (value === undefined) return null;
         out.push({ text: value });
@@ -397,8 +489,8 @@ function translateRg(tokens: string[]): Translation | null {
     } else if (t.startsWith("-") && t.length > 1) {
       const result = expandShortFlags(
         t.slice(1),
-        (ch) => (RG_SHORT.has(ch) && !RG_SHORT_ARG.has(ch) ? `-${ch}` : null),
-        (ch) => (RG_SHORT_ARG.has(ch) ? `-${ch}` : null),
+        (ch) => (RG_SHORT_SPECS[ch]?.kind === "flag" ? `-${ch}` : null),
+        (ch) => (RG_SHORT_SPECS[ch]?.kind === "arg" ? `-${ch}` : null),
         tokens,
         i,
       );
@@ -431,55 +523,61 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: string[]): Translati
     }
     if (t.startsWith("--")) {
       const eq = t.indexOf("=");
-      const name = eq === -1 ? t : t.slice(0, eq);
+      const name = (eq === -1 ? t : t.slice(0, eq)) as `--${string}`;
       const value = eq === -1 ? undefined : t.slice(eq + 1);
-      if (name === "--fixed-strings") engine = "fixed";
-      else if (name === "--extended-regexp") engine = "ere";
-      else if (name === "--perl-regexp") engine = "pcre";
-      else if (name === "--basic-regexp") engine = "bre";
-      if (name === "--regexp" || name === "--file") {
-        patternFlag = true;
-        if (name === "--regexp" && value !== undefined) ePatterns.push(value);
-      }
-      if (name === "--include" && value !== undefined) {
-        out.push({ text: "-g" }, { text: value, quote: true });
-      } else if (name === "--exclude" && value !== undefined) {
-        out.push({ text: "-g" }, { text: `!${value}`, quote: true });
-      } else if (name === "--exclude-dir" && value !== undefined) {
-        out.push({ text: "-g" }, { text: `!${value}/**`, quote: true });
-      } else if (name === "--color") {
-        out.push({ text: "--color" }, { text: value ?? "auto" });
-      } else if (GREP_LONG_SIMPLE[name]) {
-        out.push({ text: GREP_LONG_SIMPLE[name]! });
-      } else if (GREP_LONG_ARG[name]) {
-        if (value !== undefined) out.push({ text: GREP_LONG_ARG[name]! }, { text: value });
-        else {
-          const next = tokens[++i];
-          if (next === undefined) return null;
-          if (name === "--regexp") ePatterns.push(next);
-          out.push({ text: GREP_LONG_ARG[name]! }, { text: next });
+      const spec = GREP_LONG_SPECS[name];
+      if (!spec) return null;
+      switch (spec.kind) {
+        case "emit":
+        case "drop":
+          if (spec.engine) engine = spec.engine;
+          if (spec.kind === "emit") out.push({ text: spec.to });
+          break;
+        case "arg": {
+          if (spec.patternSource) {
+            patternFlag = true;
+            if (spec.patternSource === "regexp" && value !== undefined) ePatterns.push(value);
+          }
+          if (value !== undefined) {
+            out.push({ text: spec.to }, { text: value });
+          } else {
+            const next = tokens[++i];
+            if (next === undefined) return null;
+            if (spec.patternSource === "regexp") ePatterns.push(next);
+            out.push({ text: spec.to }, { text: next });
+          }
+          break;
         }
-      } else if (GREP_LONG_DROP.has(name)) {
-        // dropped: recursive-by-default, accepted-for-compatibility, or no-op flags
-      } else if (GREP_LONG_BLOCK.has(name)) {
-        return null;
-      } else {
-        return null;
+        case "glob": {
+          if (value === undefined) return null;
+          const negate = spec.mode === "include" ? "" : "!";
+          const suffix = spec.mode === "exclude-dir" ? "/**" : "";
+          out.push({ text: "-g" }, { text: `${negate}${value}${suffix}`, quote: true });
+          break;
+        }
+        case "color":
+          out.push({ text: "--color" }, { text: value ?? "auto" });
+          break;
+        case "block":
+          return null;
+        default: {
+          const exhaustive: never = spec;
+          throw new Error(`Unhandled grep long flag spec: ${JSON.stringify(exhaustive)}`);
+        }
       }
     } else if (t.startsWith("-") && t.length > 1) {
       const result = expandShortFlags(
         t.slice(1),
         (ch) => {
-          if (ch === "F") engine = "fixed";
-          else if (ch === "E") engine = "ere";
-          else if (ch === "P") engine = "pcre";
-          else if (ch === "G") engine = "bre";
-          if (GREP_SHORT_KEEP[ch]) return GREP_SHORT_KEEP[ch]!;
-          if (GREP_SHORT_ARG[ch]) return "";
-          if (GREP_SHORT_DROP.has(ch)) return "";
-          return null;
+          const spec = GREP_SHORT_SPECS[ch];
+          if (!spec) return null;
+          if (spec.kind !== "arg" && spec.engine) engine = spec.engine;
+          return spec.kind === "emit" ? spec.to : "";
         },
-        (ch) => (GREP_SHORT_ARG[ch] ? GREP_SHORT_ARG[ch]! : null),
+        (ch) => {
+          const spec = GREP_SHORT_SPECS[ch];
+          return spec?.kind === "arg" ? spec.to : null;
+        },
         tokens,
         i,
       );
