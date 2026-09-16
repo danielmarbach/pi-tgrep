@@ -117,7 +117,7 @@ export default function piTgrep(pi: ExtensionAPI) {
     if (result.action === "rewrite" && original !== undefined && typeof input.command === "string") {
       rewritten.set(event.toolCallId, { command: input.command, original });
     }
-    if (result.warned) {
+    if (result.action === "allow" && result.warned) {
       ctx.ui.notify("pi-tgrep: shell grep bypasses the tgrep index; prefer the grep tool", "warning");
     }
   });
