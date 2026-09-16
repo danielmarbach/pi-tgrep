@@ -37,8 +37,8 @@ function isTranslatableGrepBinary(value: GrepFamilyBinary): value is Translatabl
 export const BLOCK_REASON =
   "Command uses grep/rg in the shell, which bypasses the tgrep index. Use the grep tool instead " +
   "(it supports path, glob, ignoreCase, literal, context, limit); it is tgrep-backed and pinned " +
-  "to the repo index. To run tgrep yourself, pass --index-path <repo>/.tgrep or it falls back to " +
-  "scanning every file outside the repo root.";
+  "to the repo index. To run tgrep yourself, pass --index-path <repo>/.tgrep so it uses the index " +
+  "from any directory; a bare run only looks for the index next to the searched path.";
 
 const RG_SHORT: Set<string> = new Set(
   "isSFwvefUlcoEmqgtTaABCHInNMpbxjL0urp".split(""),
