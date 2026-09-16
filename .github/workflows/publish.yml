@@ -10,7 +10,7 @@ on:
         description: "Tag to simulate (e.g. v0.2.0)"
         required: true
       dry_run:
-        description: "Skip publishing (npm, GitHub release)"
+        description: "Skip publishing (npm, GitHub release, milestone)"
         type: boolean
         default: true
       run_npm:
@@ -18,7 +18,7 @@ on:
         type: boolean
         default: true
       run_release:
-        description: "Run GitHub release job"
+        description: "Run GitHub release and milestone job"
         type: boolean
         default: true
 
@@ -98,6 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write  # Required to create GitHub releases
+      issues: write    # Required to close milestones
 
     steps:
       - name: Check out repository
@@ -125,3 +126,19 @@ jobs:
           gh release create "${{ inputs.tag || github.ref_name }}" \
             --title "${{ inputs.tag || github.ref_name }}" \
             --notes-file RELEASE_NOTES_LATEST.md
+
+      - name: Close milestone
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          MILESTONE=$(gh api "repos/${{ github.repository }}/milestones" \
+            --jq ".[] | select(.title == \"${TAG}\") | .number" 2>/dev/null || true)
+          if [ -n "$MILESTONE" ]; then
+            gh api "repos/${{ github.repository }}/milestones/${MILESTONE}" \
+              -X PATCH -f state=closed
+            echo "Closed milestone ${TAG} (#${MILESTONE})"
+          else
+            echo "No milestone named ${TAG} found, skipping"
+          fi

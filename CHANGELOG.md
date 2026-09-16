@@ -10,6 +10,17 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-16
+
+### Fixed
+
+- Shell `grep`/`rg` commands that use backslash escapes (for example `\b`, `\d`, `\.`) are
+  rewritten to `tgrep` with the pattern preserved, instead of being corrupted into a pattern
+  that matched nothing.
+- The message shown when a shell search is blocked now points at the index-backed `grep` tool
+  and tells you to pass `--index-path` when running `tgrep` yourself, instead of suggesting a
+  bare `tgrep` run that only looks for the index next to the searched path.
+
 ## [0.2.0] - 2026-09-16
 
 ### Changed

@@ -36,7 +36,9 @@ function isTranslatableGrepBinary(value: GrepFamilyBinary): value is Translatabl
 
 export const BLOCK_REASON =
   "Command uses grep/rg in the shell, which bypasses the tgrep index. Use the grep tool instead " +
-  "(it supports path, glob, ignoreCase, literal, context, limit), or run tgrep directly.";
+  "(it supports path, glob, ignoreCase, literal, context, limit); it is tgrep-backed and pinned " +
+  "to the repo index. To run tgrep yourself, pass --index-path <repo>/.tgrep so it uses the index " +
+  "from any directory; a bare run only looks for the index next to the searched path.";
 
 const RG_SHORT: Set<string> = new Set(
   "isSFwvefUlcoEmqgtTaABCHInNMpbxjL0urp".split(""),
@@ -100,7 +102,7 @@ const GREP_LONG_BLOCK = new Set([
   "--no-dereference-command-line", "--dereference-command-line-symlink-to-dir", "--exclude-directories",
 ]);
 const BRE_ONLY_PATTERN = /\\[(){}+?|1-9]|\\<|\\>/;
-const UNSAFE_TOKEN_PATTERN = /[\s|&;<>()$`*"'?[\]{}~#]/;
+const UNSAFE_TOKEN_PATTERN = /[\s\\|&;<>()$`*"'?[\]{}~#]/;
 const BACKREF_PATTERN = /\\[1-9]/;
 
 type GrepEngine = "fixed" | "ere" | "pcre" | "bre";
@@ -158,8 +160,14 @@ function tokenizeDetailed(command: string): Token[] | null {
       else if (c === "\\") {
         const next = command[++i];
         if (next === undefined) return null;
-        current += next;
-        quoted = true;
+        // Inside double quotes a backslash only escapes $, `, ", \ and newline; otherwise it is literal.
+        if (next === "$" || next === "`" || next === '"' || next === "\\") {
+          current += next;
+          quoted = true;
+        } else if (next !== "\n") {
+          current += "\\" + next;
+          quoted = true;
+        }
       } else {
         current += c;
         quoted = true;

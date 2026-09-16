@@ -1,6 +1,6 @@
 {
   "name": "@danielmarbach/pi-tgrep",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "tgrep-backed code search for pi: auto-indexes the repo and routes all grep traffic through the trigram index",
   "keywords": [
     "pi-package",
@@ -29,7 +29,7 @@
   "scripts": {
     "analyze": "node scripts/analyze-pi-sessions.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test test/harness.mjs test/bash-policy-fallback.test.mjs test/grep-details.test.mjs test/server-lifecycle.test.mjs"
+    "test": "node --test test/harness.mjs test/bash-policy-fallback.test.mjs test/bash-provenance.test.mjs test/grep-details.test.mjs test/server-lifecycle.test.mjs"
   },
   "pi": {
     "extensions": [
