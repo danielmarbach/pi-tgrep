@@ -291,8 +291,15 @@ function tokenizeDetailed(command: string): Token[] | null {
   return tokens;
 }
 
-function scanPipeline(command: string): string[] | null {
-  const segments: string[] = [];
+/** Command split on shell separators; separators[i] joins parts[i] and parts[i + 1]. */
+interface ScannedCommand {
+  parts: string[];
+  separators: string[];
+}
+
+function scanPipeline(command: string): ScannedCommand | null {
+  const parts: string[] = [];
+  const separators: string[] = [];
   let current = "";
   let inSingle = false;
   let inDouble = false;
@@ -337,7 +344,23 @@ function scanPipeline(command: string): string[] | null {
       i += 2;
       continue;
     }
-    if (c === ";" || c === "`" || c === "&") return null;
+    if (c === "`") return null;
+    if (c === ";") {
+      parts.push(current);
+      separators.push(";");
+      current = "";
+      i++;
+      continue;
+    }
+    if (c === "&") {
+      // A single & is the background operator; only && separates commands.
+      if (command[i + 1] !== "&") return null;
+      parts.push(current);
+      separators.push("&&");
+      current = "";
+      i += 2;
+      continue;
+    }
     if (c === "<") {
       if (command[i + 1] !== "<") return null;
       current += "<<";
@@ -372,7 +395,8 @@ function scanPipeline(command: string): string[] | null {
     }
     if (c === "|") {
       if (command[i + 1] === "|") return null;
-      segments.push(current);
+      parts.push(current);
+      separators.push("|");
       current = "";
       i++;
       continue;
@@ -380,8 +404,8 @@ function scanPipeline(command: string): string[] | null {
     current += c;
     i++;
   }
-  segments.push(current);
-  return segments;
+  parts.push(current);
+  return { parts, separators };
 }
 
 function splitRedirect(segment: string): { cmd: string; suffix: string } {
@@ -721,13 +745,13 @@ export function applyBashPolicy(command: string, mode: BashPolicyMode, context?:
   const cdPrefix = cd?.prefix ?? "";
   const effective = cd ? cd.rest : command;
 
-  const segments = scanPipeline(effective);
-  if (!segments) return { action: "block", reason: BLOCK_REASON };
+  const scanned = scanPipeline(effective);
+  if (!scanned) return { action: "block", reason: BLOCK_REASON };
 
   const rendered: string[] = [];
   let changed = false;
-  for (const segment of segments) {
-    const result = policySegment(segment, mode, context?.indexPath);
+  for (const part of scanned.parts) {
+    const result = policySegment(part, mode, context?.indexPath);
     switch (result.kind) {
       case "block":
         return { action: "block", reason: BLOCK_REASON };
@@ -736,7 +760,7 @@ export function applyBashPolicy(command: string, mode: BashPolicyMode, context?:
         rendered.push(result.text);
         break;
       case "verbatim":
-        rendered.push(segment.trim());
+        rendered.push(part.trim());
         break;
       default: {
         const exhaustive: never = result;
@@ -745,5 +769,10 @@ export function applyBashPolicy(command: string, mode: BashPolicyMode, context?:
     }
   }
   if (!changed) return { action: "allow" };
-  return { action: "rewrite", command: cdPrefix + rendered.join(" | ") };
+  let text = "";
+  for (let i = 0; i < rendered.length; i++) {
+    text += rendered[i]!;
+    if (i < scanned.separators.length) text += ` ${scanned.separators[i]!} `;
+  }
+  return { action: "rewrite", command: (cdPrefix + text).trimEnd() };
 }

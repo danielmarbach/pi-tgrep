@@ -105,5 +105,42 @@ function runFallbackTests() {
   console.log("bash policy fallback tests ok");
 }
 
+function runCompoundCommandTests() {
+  // ; and && split compounds like | splits pipelines: non-search parts stay verbatim
+  policyCase("head -60 x.txt && grep -c foo y.txt", "translate", {
+    action: "rewrite",
+    command: "head -60 x.txt && tgrep -c foo y.txt",
+  });
+  const compoundIdx = policyCase("head -60 x.txt && grep -c foo y.txt", "translate", {
+    action: "rewrite",
+    command: "head -60 x.txt && tgrep --index-path '/repo/.tgrep' -c foo y.txt",
+  }, IDX);
+  assert.ok(compoundIdx.command.includes("--index-path"), "index injection lands in the search part only");
+  policyCase("echo hi; grep foo bar", "translate", { action: "rewrite", command: "echo hi ; tgrep foo bar" });
+  policyCase("grep -rn foo src/ && npm test", "translate", { action: "rewrite", command: "tgrep -n foo src/ && npm test" });
+  policyCase("grep foo . && cd /tmp", "translate", { action: "rewrite", command: "tgrep foo . && cd /tmp" });
+  policyCase("grep foo .;", "translate", { action: "rewrite", command: "tgrep foo . ;" });
+
+  // pure pipelines keep their exact rendering
+  policyCase("grep -rn foo src/ | head -5", "translate", { action: "rewrite", command: "tgrep -n foo src/ | head -5" });
+  policyCase("echo x | grep foo . 2>&1 | tee out", "translate", {
+    action: "rewrite",
+    command: "echo x | tgrep foo . 2>&1 | tee out",
+  });
+  // cd prefix handling composes with compound splitting
+  policyCase("cd /tmp && grep -rn foo .", "translate", { action: "rewrite", command: "cd /tmp && tgrep -n foo ." });
+
+  // anything statically opaque or untranslatable in any part still blocks the whole command
+  policyCase("echo a && grep -d skip foo .", "translate", { action: "block" });
+  policyCase("echo $(grep foo bar)", "translate", { action: "block" });
+  policyCase("echo `grep foo bar`", "translate", { action: "block" });
+  policyCase("grep foo < in.txt", "translate", { action: "block" });
+  policyCase("grep foo bar &", "translate", { action: "block" });
+  policyCase("head x && grep foo y", "block", { action: "block" });
+
+  console.log("bash policy compound tests ok");
+}
+
 runFallbackTests();
+runCompoundCommandTests();
 console.log("ALL FALLBACK TESTS PASSED");

@@ -10,6 +10,14 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+### Fixed
+
+- Compound shell commands joined with `&&` or `;` that contain a `grep`/`rg` call no longer
+  block the entire command. Only the search part is rewritten to use the tgrep index and the
+  rest of the command runs unchanged. The whole command is still blocked when its search part
+  cannot be translated, or when it uses command substitution, backticks, background `&`, or
+  input redirection.
+
 ## [0.2.1] - 2026-09-16
 
 ### Fixed

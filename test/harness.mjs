@@ -71,7 +71,11 @@ function runPolicyTests() {
     command: "tgrep needle file.txt | wc -l",
   });
   policyCase("rg foo . > out.txt", "translate", { action: "rewrite", command: "tgrep foo . > out.txt" });
-  policyCase("grep foo .; rm x", "translate", { action: "block" });
+  // compounds split on ; and &&: the search part translates, other parts run verbatim
+  policyCase("grep foo .; rm x", "translate", { action: "rewrite", command: "tgrep foo . ; rm x" });
+  policyCase("echo hi && grep foo .", "translate", { action: "rewrite", command: "echo hi && tgrep foo ." });
+  // an untranslatable search part still blocks the whole compound
+  policyCase("grep -d skip foo .; rm x", "translate", { action: "block" });
   policyCase("echo $(rg foo .)", "translate", { action: "block" });
   policyCase("grep foo < in.txt", "translate", { action: "block" });
   policyCase("grep -rn --include=*.ts needle .", "translate", {
@@ -113,7 +117,6 @@ function runPolicyTests() {
   });
   policyCase("cd /x; grep foo .", "translate", { action: "rewrite", command: "cd /x; tgrep foo ." });
   policyCase('cd "$(pwd)" && grep foo .', "translate", { action: "block" });
-  policyCase("echo hi && grep foo .", "translate", { action: "block" });
   policyCase(
     "grep -rniE --include=\"*.cs\" '^\\s*(public\\s+)?class' src/NServiceBus.Core 2>/dev/null | grep -v \"/obj/\" | sed \"s|x|y|\" | sort",
     "translate",
@@ -205,10 +208,15 @@ function runWatchedToolsTests() {
   assert.equal(input.commands[0].command, "ls src/");
   assert.equal(input.commands[1].command, "tgrep -n x .");
 
-  input = { commands: [{ label: "cleanup", command: "grep foo .; rm x" }] };
+  input = { commands: [{ label: "cleanup", command: "grep -d skip foo .; rm x" }] };
   r = applyToolCallPolicy("ctx_batch_execute", input, "translate", watched);
   assert.equal(r.action, "block");
   assert.match(r.reason ?? "", /cleanup/);
+
+  input = { commands: [{ label: "scan", command: "grep -n foo . && ls" }] };
+  r = applyToolCallPolicy("ctx_batch_execute", input, "translate", watched);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.commands[0].command, "tgrep -n foo . && ls");
 
   input = { language: "shell", code: "grep -rl foo src" };
   r = applyToolCallPolicy("mcp__context-mode__ctx_execute", input, "translate", watched);
