@@ -74,10 +74,10 @@ path into the fast one and closes the side doors.
 pi install /path/to/pi-tgrep
 
 # from git
-pi install git:github.com/<owner>/pi-tgrep
+pi install git:github.com/danielmarbach/pi-tgrep
 
-# from npm (once published)
-pi install npm:pi-tgrep
+# from npm
+pi install npm:@danielmarbach/pi-tgrep
 ```
 
 Requires the `tgrep` binary (`brew install tgrep`, or cargo from the tgrep repo). If it is
