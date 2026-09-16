@@ -1,5 +1,5 @@
 {
-  "name": "pi-tgrep",
+  "name": "@danielmarbach/pi-tgrep",
   "version": "0.1.0",
   "description": "tgrep-backed code search for pi: auto-indexes the repo and routes all grep traffic through the trigram index",
   "keywords": [
@@ -10,6 +10,14 @@
     "search"
   ],
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danielmarbach/pi-tgrep.git"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
   "license": "MIT",
   "scripts": {
     "analyze": "node scripts/analyze-pi-sessions.mjs",
