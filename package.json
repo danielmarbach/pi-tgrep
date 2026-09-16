@@ -1,6 +1,6 @@
 {
   "name": "@danielmarbach/pi-tgrep",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "tgrep-backed code search for pi: auto-indexes the repo and routes all grep traffic through the trigram index",
   "keywords": [
     "pi-package",
