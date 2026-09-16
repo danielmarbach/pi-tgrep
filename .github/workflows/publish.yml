@@ -1,0 +1,127 @@
+name: Publish Package
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to simulate (e.g. v0.2.0)"
+        required: true
+      dry_run:
+        description: "Skip publishing (npm, GitHub release)"
+        type: boolean
+        default: true
+      run_npm:
+        description: "Run npm publish job"
+        type: boolean
+        default: true
+      run_release:
+        description: "Run GitHub release job"
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: ${{ github.event_name == 'push' || inputs.run_npm || inputs.run_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Verify tag matches package version
+        if: ${{ !inputs.dry_run }}
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          TAG_NAME="${{ inputs.tag || github.ref_name }}"
+
+          if [ "$TAG_NAME" != "v$PACKAGE_VERSION" ]; then
+            echo "Tag $TAG_NAME does not match package version v$PACKAGE_VERSION"
+            exit 1
+          fi
+
+  publish-npm:
+    needs: verify
+    if: ${{ github.event_name == 'push' || inputs.run_npm }}
+    runs-on: macos-latest
+    environment: Release
+    permissions:
+      contents: read
+      id-token: write  # Required for npm OIDC trusted publishing
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Update npm for OIDC trusted publishing
+        run: npm install -g npm@latest  # Requires npm >= 11.5.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install tgrep
+        run: brew install tgrep
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        run: npm publish  # Provenance attestation is automatic via OIDC trusted publishing
+
+  create-release:
+    needs: [verify, publish-npm]
+    if: ${{ always() && (github.event_name == 'push' || inputs.run_release) && (needs.verify.result == 'success' || needs.verify.result == 'skipped') && (needs.publish-npm.result == 'success' || needs.publish-npm.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to create GitHub releases
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
+      - name: Extract release notes from changelog
+        run: |
+          VERSION="${{ inputs.tag || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md \
+            | sed '/./,$!d' \
+            > RELEASE_NOTES_LATEST.md
+          echo "Extracted release notes for v${VERSION}:"
+          cat RELEASE_NOTES_LATEST.md
+
+      - name: Create GitHub release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.tag || github.ref_name }}" \
+            --title "${{ inputs.tag || github.ref_name }}" \
+            --notes-file RELEASE_NOTES_LATEST.md
