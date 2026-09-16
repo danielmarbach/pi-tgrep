@@ -10,6 +10,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-16
+
 ### Fixed
 
 - Compound shell commands joined with `&&` or `;` that contain a `grep`/`rg` call no longer
