@@ -104,11 +104,22 @@ test("pipeline translation stamps the rewritten full command", async () => {
 });
 
 test("blocked bash commands leave no stamp", async () => {
-  const { res } = await toolCall("p4", "bash", { command: "grep foo .; rm x" });
+  const { res } = await toolCall("p4", "bash", { command: "grep -d skip foo ." });
   assert.equal(res?.block, true);
   assert.match(res?.reason ?? "", /bypasses the tgrep index/);
   assert.equal(await toolResult("p4", "bash", undefined), undefined);
   console.log("blocked unstamped ok");
+});
+
+test("compound command stamps the rewritten full command", async () => {
+  const { event, res } = await toolCall("p6", "bash", { command: "grep foo .; rm x" });
+  assert.equal(res, undefined, "compound with a translatable search part must not block");
+  assert.equal(event.input.command, "tgrep foo . ; rm x");
+  const patch = await toolResult("p6", "bash", undefined);
+  assert.deepEqual(patch, {
+    details: { engine: "tgrep", command: "tgrep foo . ; rm x", original: "grep foo .; rm x" },
+  });
+  console.log("compound stamp ok");
 });
 
 test("non-bash watched rewrites do not stamp bash results", async () => {
