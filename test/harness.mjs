@@ -51,6 +51,13 @@ function runPolicyTests() {
   policyCase("rg -n 'foo|bar' .", "translate", { action: "rewrite", command: "tgrep -n 'foo|bar' ." });
   policyCase("rg -g '*.ts' needle src/", "translate", { action: "rewrite", command: "tgrep -g '*.ts' needle src/" });
   policyCase('rg -n "two words" .', "translate", { action: "rewrite", command: "tgrep -n 'two words' ." });
+  // backslash escapes must survive the rewrite, so the shell receives the pattern re-quoted
+  policyCase(String.raw`rg -n "\bbash\b" .`, "translate", { action: "rewrite", command: String.raw`tgrep -n '\bbash\b' .` });
+  policyCase(String.raw`rg -n '\bbash\b' .`, "translate", { action: "rewrite", command: String.raw`tgrep -n '\bbash\b' .` });
+  policyCase(String.raw`rg -n "\d+" .`, "translate", { action: "rewrite", command: String.raw`tgrep -n '\d+' .` });
+  policyCase(String.raw`rg -n "\sfoo" .`, "translate", { action: "rewrite", command: String.raw`tgrep -n '\sfoo' .` });
+  policyCase(String.raw`rg -n "\.ts$" .`, "translate", { action: "rewrite", command: String.raw`tgrep -n '\.ts$' .` });
+  policyCase(String.raw`rg \bfoo .`, "translate", { action: "rewrite", command: String.raw`tgrep bfoo .` });
   policyCase('grep -rl "IBehavior<" src --include="*.cs" | head -50', "translate", {
     action: "rewrite",
     command: "tgrep -l -g '*.cs' 'IBehavior<' src | head -50",
@@ -153,6 +160,25 @@ async function runRedirectExecTest() {
   assert.ok(!stderr.includes("IO error"), `unexpected IO error: ${stderr}`);
   await rm(dir, { recursive: true, force: true });
   console.log("redirect exec test ok");
+}
+
+async function runBackslashPatternExecTest() {
+  const dir = await mkdtemp(path.join(tmpdir(), "pi-tgrep-backslash-"));
+  await writeFile(path.join(dir, "data.txt"), "foo\nfoobar\nbarfoo\n");
+  const result = applyBashPolicy(String.raw`rg -n "\bfoo\b" .`, "translate");
+  assert.equal(result.action, "rewrite");
+  assert.equal(result.command, String.raw`tgrep -n '\bfoo\b' .`);
+  let stdout = "";
+  try {
+    ({ stdout } = await execFileP("bash", ["-c", result.command], { cwd: dir, encoding: "utf8" }));
+  } catch (err) {
+    stdout = err.stdout ?? "";
+  }
+  const matches = stdout.split("\n").filter((line) => line.includes("foo"));
+  assert.equal(matches.length, 1, `expected exactly one word-boundary match, got: ${JSON.stringify(stdout)}`);
+  assert.match(matches[0], /data\.txt:1:/);
+  await rm(dir, { recursive: true, force: true });
+  console.log("backslash pattern exec test ok");
 }
 
 function runWatchedToolsTests() {
@@ -367,6 +393,7 @@ await execFileP("git", ["init"], { cwd: repoDir });
 try {
   runPolicyTests();
   await runRedirectExecTest();
+  await runBackslashPatternExecTest();
   runWatchedToolsTests();
   runGrepArgsTests(repoDir);
   await runGrepToolTests(repoDir);
