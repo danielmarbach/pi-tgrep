@@ -153,10 +153,13 @@ The only additions are metadata: `details.engine: "tgrep" | "rg-fallback"`,
 ## Validation
 
 ```bash
-npx tsc --noEmit -p tsconfig.json    # types
-node --test test/harness.mjs         # component + lifecycle tests (no provider needed)
-node --test test/bash-policy-fallback.test.mjs test/grep-details.test.mjs test/server-lifecycle.test.mjs
+npm run typecheck   # npx tsc --noEmit -p tsconfig.json
+npm test            # node --test over harness.mjs + the *.test.mjs suites
 ```
+
+The test suites shell out to the real `tgrep` binary (`brew install tgrep`), so they need it on
+`PATH` locally and in CI — see `.github/workflows/ci.yml`, which runs on `macos-latest` for that
+reason.
 
 `node scripts/analyze-pi-sessions.mjs` (or `npm run analyze`) mines `~/.pi/agent/sessions/`
 for the real numbers: indexed vs fallback vs builtin grep traffic, zero-result rate, latency
