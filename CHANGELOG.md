@@ -10,6 +10,11 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+### Changed
+
+- npm installs now carry only what runs: the extension, its sources, README, changelog, and
+  license. Test fixtures and CI workflow files are no longer downloaded with the package.
+
 ## [0.1.0] - 2026-09-16
 
 ### Added
