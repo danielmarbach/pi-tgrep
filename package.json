@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "description": "tgrep-backed code search for pi: auto-indexes the repo and routes all grep traffic through the trigram index",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "tgrep",
+    "search"
   ],
   "type": "module",
   "license": "MIT",
