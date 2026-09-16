@@ -16,12 +16,19 @@ This project keeps a [`CHANGELOG.md`](./CHANGELOG.md) following the
   Skip the changelog entry entirely for changes that have no observable effect on users.
 - Use the existing `Added` / `Changed` / `Fixed` / `Removed` subsections under `[Unreleased]`,
   creating them as needed.
-- Do not add a new version heading yourself; release automation moves `[Unreleased]` into a
-  dated version section when a release is cut.
+- Keep entries under `[Unreleased]` for ordinary changes; do not invent a version heading for
+  them. Cutting a release moves them under a new dated heading — see Releasing.
 
 ## Releasing
 
-Releases are cut by pushing a `v*.*.*` tag, which triggers
-[`.github/workflows/publish.yml`](./.github/workflows/publish.yml). That workflow verifies the
-tag matches `package.json`, runs typecheck/tests, publishes to npm, and creates a GitHub release
-using the matching `CHANGELOG.md` section.
+Nothing cuts the changelog automatically, so prepare the release by hand:
+
+1. Bump `version` in `package.json` and in `package-lock.json` (both the top-level field and
+   `packages[""].version`).
+2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new `## [x.y.z] - YYYY-MM-DD`
+   heading, leaving `[Unreleased]` empty at the top.
+3. Commit, then push a `vx.y.z` tag that matches the version.
+
+Pushing the tag triggers [`.github/workflows/publish.yml`](./.github/workflows/publish.yml),
+which verifies the tag matches `package.json`, runs typecheck/tests, publishes to npm, creates a
+GitHub release from the matching `CHANGELOG.md` section, and closes the milestone titled `vx.y.z`.
