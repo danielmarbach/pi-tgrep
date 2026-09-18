@@ -33,13 +33,16 @@ export default function piTgrep(pi: ExtensionAPI) {
   const manager = new ServerManager(pi, cfg);
   let toolRegistered = false;
   let sessionSeq = 0;
-  let cachedIndexPath: string | null | undefined;
   // toolCallId -> rewritten provenance; session logs persist pre-rewrite args, so the
   // tool_result details stamp is the only observable trace of a translation
   const rewritten = new Map<string, { command: string; original: string }>();
 
+  // Positives only: a directory gets cached once its index exists; negatives are rechecked so
+  // an index built later in the session is picked up.
+  const indexPositive = new Map<string, string>();
   const shellIndexPath = async (cwd: string): Promise<string | undefined> => {
-    if (cachedIndexPath !== undefined) return cachedIndexPath || undefined;
+    const cached = indexPositive.get(cwd);
+    if (cached) return cached;
     const root = await repoRoot(cwd);
     if (!root) return undefined;
     const dir = resolveIndexPath(root);
@@ -48,7 +51,7 @@ export default function piTgrep(pi: ExtensionAPI) {
     } catch {
       return undefined;
     }
-    cachedIndexPath = dir;
+    indexPositive.set(cwd, dir);
     return dir;
   };
 
@@ -111,8 +114,10 @@ export default function piTgrep(pi: ExtensionAPI) {
     const original = watchedKey(event.toolName, cfg.watchedTools) === "bash" && typeof input.command === "string"
       ? input.command
       : undefined;
-    const context = cfg.bashPolicy === "translate" ? { indexPath: await shellIndexPath(ctx.cwd) } : undefined;
-    const result = applyToolCallPolicy(event.toolName, input, cfg.bashPolicy, cfg.watchedTools, context);
+    // The policy resolves the index for the command's effective cwd (after any leading `cd`),
+    // so `cd /repo && grep …` searches repo's index, not the session repo's.
+    const context = cfg.bashPolicy === "translate" ? { cwd: ctx.cwd, resolveIndex: shellIndexPath } : undefined;
+    const result = await applyToolCallPolicy(event.toolName, input, cfg.bashPolicy, cfg.watchedTools, context);
     if (result.action === "block") return { block: true, reason: result.reason };
     if (result.action === "rewrite" && original !== undefined && typeof input.command === "string") {
       rewritten.set(event.toolCallId, { command: input.command, original });
