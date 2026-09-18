@@ -11,7 +11,7 @@ export interface PolicyContext {
 }
 
 export type BashPolicyAction = 
-  | { action: "allow"; warned?: boolean }
+  | { action: "allow" }
   | { action: "rewrite"; command: string }
   | { action: "block"; reason: string }
   | { action: "warn"; command: string };
@@ -634,7 +634,7 @@ function emitToken(text: string, forceQuote: boolean): string {
   return `'${text.replace(/'/g, "'\\''")}'`;
 }
 
-type SegmentResult = { kind: "verbatim"; warned?: boolean } | { kind: "rewrite"; text: string } | { kind: "block" };
+type SegmentResult = { kind: "verbatim" } | { kind: "rewrite"; text: string } | { kind: "block" };
 
 function policySegment(
   segment: string,
@@ -661,9 +661,6 @@ function policySegment(
   const forceScan = bin === "rg" && rest.includes("--files");
   const minPositionals = translation.patternFlag ? 1 : 2;
   if (translation.positionals.length < minPositionals && !forceScan) return { kind: "verbatim" };
-  // Without an index directory to point at, a bare tgrep run would scan-or-rebuild on its own;
-  // keep the original command instead so grep semantics stay exact and nothing hangs.
-  if (!indexPath) return { kind: "verbatim", warned: true };
   const rendered = ["tgrep", "search"];
   const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
   const paths = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
@@ -774,7 +771,6 @@ export async function applyBashPolicy(
 
   const rendered: string[] = [];
   let changed = false;
-  let warned = false;
   for (const part of scanned.parts) {
     const result = policySegment(part, mode, indexPath);
     switch (result.kind) {
@@ -785,7 +781,6 @@ export async function applyBashPolicy(
         rendered.push(result.text);
         break;
       case "verbatim":
-        if (result.warned) warned = true;
         rendered.push(part.trim());
         break;
       default: {
@@ -794,7 +789,7 @@ export async function applyBashPolicy(
       }
     }
   }
-  if (!changed) return warned ? { action: "allow", warned: true } : { action: "allow" };
+  if (!changed) return { action: "allow" };
   let text = "";
   for (let i = 0; i < rendered.length; i++) {
     text += rendered[i]!;

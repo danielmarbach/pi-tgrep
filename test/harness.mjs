@@ -120,9 +120,12 @@ async function runPolicyTests() {
   }, IDX);
   await policyCase("cd /x; grep foo .", "translate", { action: "rewrite", command: "cd /x; tgrep search --index-path '/repo/.tgrep' foo ." }, IDX);
   await policyCase('cd "$(pwd)" && grep foo .', "translate", { action: "block" });
-  // without an index, translatable searches keep the original grep (nothing to point tgrep at)
-  await policyCase("rg -n needle src/", "translate", { action: "allow" });
-  await policyCase("cd /tmp && grep -rn foo .", "translate", { action: "allow" });
+  // without an index the rewrite still routes through tgrep search, which scans directly
+  await policyCase("rg -n needle src/", "translate", { action: "rewrite", command: "tgrep search -n needle src/" });
+  await policyCase("cd /tmp && grep -rn foo .", "translate", {
+    action: "rewrite",
+    command: "cd /tmp && tgrep search -n foo .",
+  });
   await policyCase(
     "grep -rniE --include=\"*.cs\" '^\\s*(public\\s+)?class' src/NServiceBus.Core 2>/dev/null | grep -v \"/obj/\" | sed \"s|x|y|\" | sort",
     "translate",
@@ -263,9 +266,8 @@ async function runWatchedToolsTests() {
 
   input = { command: "grep -rn needle src" };
   r = await applyToolCallPolicy("bash", input, "translate", watched);
-  assert.equal(r.action, "allow");
-  assert.equal(r.warned, true, "bash rewrite without an index falls back to the original grep");
-  assert.equal(input.command, "grep -rn needle src");
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.command, "tgrep search -n needle src");
 
   input = { command: "rg foo /etc" };
   r = await applyToolCallPolicy("bash", input, "translate", watched, IDX);
@@ -289,8 +291,8 @@ async function runWatchedToolsTests() {
 
   input = { language: "javascript", code: 'execSync("grep -rn foo .");' };
   r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
-  assert.equal(r.action, "allow");
-  assert.equal(r.warned, true, "embedded grep without an index stays in place (and warns)");
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, 'execSync("tgrep search -n foo .");');
 
   input = { language: "javascript", code: "execSync('grep -rn foo .');" };
   r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
