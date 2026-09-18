@@ -61,13 +61,11 @@ async function runFallbackTests() {
     command: "tgrep search --index-path '/repo/.tgrep' '(a)\\1' src/",
   }, IDX);
 
-  // without an index directory to point at, a translatable search runs the original grep verbatim (and warns)
+  // without an index directory the rewrite still routes through tgrep search, which scans directly
   const noIndex = await applyBashPolicy("grep -rn foo src/", "translate");
-  assert.equal(noIndex.action, "allow");
-  assert.equal(noIndex.warned, true, "no-index fallback must warn");
+  assert.deepEqual(noIndex, { action: "rewrite", command: "tgrep search -n foo src/" });
   const noIndexCompound = await applyBashPolicy("head -60 x.txt && grep -c foo y.txt", "translate");
-  assert.equal(noIndexCompound.action, "allow");
-  assert.equal(noIndexCompound.warned, true, "no-index compound fallback must warn");
+  assert.deepEqual(noIndexCompound, { action: "rewrite", command: "head -60 x.txt && tgrep search -c foo y.txt" });
 
   // index-path injection must be -e/-f aware: positionals are all paths when the pattern comes from a flag
   const noInjectE = await policyCase("grep -e foo -r /abs/path rel", "translate", {
@@ -142,8 +140,7 @@ async function runFallbackTests() {
     cwd: "/outside",
     resolveIndex: async () => undefined,
   });
-  assert.equal(noRepo.action, "allow");
-  assert.equal(noRepo.warned, true, "unresolvable index keeps the original command");
+  assert.deepEqual(noRepo, { action: "rewrite", command: "tgrep search foo ." });
 
   // namespaced tool routing still matches watched names as suffixes
   let input = { command: "grep -rn foo ." };
@@ -152,8 +149,8 @@ async function runFallbackTests() {
   assert.equal(input.command, "tgrep search --index-path '/repo/.tgrep' -n foo .");
   input = { command: "grep -rn foo ." };
   r = await applyToolCallPolicy("mcp__context-mode__bash", input, "translate", watched);
-  assert.equal(r.action, "allow");
-  assert.equal(r.warned, true, "namespaced bash rewrite without index must fall back verbatim");
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.command, "tgrep search -n foo .");
   input = { command: "grep -rn foo ." };
   r = await applyToolCallPolicy("mcp__other__unrelated", input, "translate", watched);
   assert.equal(r.action, "allow");

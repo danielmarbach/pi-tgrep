@@ -20,9 +20,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - A translated command now uses the index of the directory it actually runs in (the leading
   `cd` target when present), so `cd /other/repo && grep …` searches that repo's index rather
   than the session repo's.
-- When no index directory exists for the command's working directory, the original
-  `grep`/`rg` command runs unchanged (with a notice) instead of being rewritten into a bare
-  `tgrep` that would scan the tree or rebuild an index beside the searched path.
+- When the searched directory has no index yet (for example during the initial index
+  build), the translated `tgrep search` scans the files directly instead of rebuilding an
+  index beside the searched path, so the very first search of a session still works.
 
 ## [0.2.2] - 2026-09-16
 

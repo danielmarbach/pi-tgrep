@@ -42,7 +42,6 @@ async function applyToShellCode(
   const lines = code.split("\n");
   let heredocEnd: string | null = null;
   let changed = false;
-  let warned = false;
   let dir = context?.cwd;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -70,8 +69,6 @@ async function applyToShellCode(
       const indent = line.slice(0, line.length - trimmed.length);
       lines[i] = `${indent}${result.command}`;
       changed = true;
-    } else if (result.action === "allow" && result.warned) {
-      warned = true;
     }
     if (!heredocEnd) {
       const marker = HEREDOC_MARKER.exec(line)?.[1];
@@ -79,7 +76,7 @@ async function applyToShellCode(
     }
     dir = dirAfterCd(dir, trimmed);
   }
-  if (!changed) return warned ? { action: "allow", warned: true } : { action: "allow" };
+  if (!changed) return { action: "allow" };
   return { action: "rewrite", code: lines.join("\n") };
 }
 
@@ -115,7 +112,6 @@ function parseJsFirstStringArg(code: string, from: number): JsStringArg | null {
 async function applyJsChildProcessGuard(code: string, mode: BashPolicyMode, context?: PolicyContext): Promise<ToolPolicyAction> {
   const calls = [...code.matchAll(JS_EXEC_CALL)];
   let changed = false;
-  let warned = false;
   for (let k = calls.length - 1; k >= 0; k--) {
     const call = calls[k]!;
     const fn = call[1]!;
@@ -155,11 +151,9 @@ async function applyJsChildProcessGuard(code: string, mode: BashPolicyMode, cont
       if (result.action === "rewrite") {
         code = code.slice(0, parse.contentStart) + result.command + code.slice(parse.contentEnd);
         changed = true;
-      } else if (result.action === "allow" && result.warned) {
-        warned = true;
       }
     }
-    return changed ? { action: "rewrite", code } : warned ? { action: "allow", warned: true } : { action: "allow" };
+    return changed ? { action: "rewrite", code } : { action: "allow" };
 }
 
 export async function applyToolCallPolicy(
@@ -177,7 +171,6 @@ export async function applyToolCallPolicy(
     const commands = input.commands;
     if (!Array.isArray(commands)) return { action: "allow" };
     let changed = false;
-    let warned = false;
     for (let i = 0; i < commands.length; i++) {
       const entry = commands[i];
       if (!entry || typeof entry !== "object") continue;
@@ -195,11 +188,9 @@ export async function applyToolCallPolicy(
       if (result.action === "rewrite") {
         rec.command = result.command;
         changed = true;
-      } else if (result.action === "allow" && result.warned) {
-        warned = true;
       }
     }
-    return changed ? { action: "rewrite" } : warned ? { action: "allow", warned: true } : { action: "allow" };
+    return changed ? { action: "rewrite" } : { action: "allow" };
   }
 
   if (key === "ctx_execute" || key === "ctx_execute_file") {
@@ -214,7 +205,7 @@ export async function applyToolCallPolicy(
         input.code = guard.code;
         return { action: "rewrite" };
       }
-      return guard.action === "allow" && guard.warned ? { action: "allow", warned: true } : { action: "allow" };
+      return { action: "allow" };
     }
     if (mode === "warn") {
       return FAMILY_PATTERN.test(code) ? { action: "allow", warned: true } : { action: "allow" };
@@ -225,7 +216,7 @@ export async function applyToolCallPolicy(
       input.code = result.code;
       return { action: "rewrite" };
     }
-    return result.action === "allow" && result.warned ? { action: "allow", warned: true } : { action: "allow" };
+    return { action: "allow" };
   }
 
   const command = input.command;
@@ -239,5 +230,5 @@ export async function applyToolCallPolicy(
     input.command = result.command;
     return { action: "rewrite" };
   }
-  return { action: "allow", warned: result.action === "allow" && result.warned ? true : undefined };
+  return { action: "allow" };
 }

@@ -46,10 +46,10 @@ path into the fast one and closes the side doors.
      `cd /other/repo && grep …` searches that repo's index, not the session repo's; when a
      valid index directory exists, translated commands whose positional paths are all
      relative get `--index-path '<index dir>'` injected (any absolute positional, or an
-     explicit `--index-path`, skips the injection); with no index available the original
-     command runs verbatim (with a notice) instead of a bare `tgrep`, which would otherwise
-     rebuild an index beside the searched path; `-e`/`--regexp`/`-f`/`--file` pattern
-     arguments are tracked so a pattern never masquerades as a path;
+     explicit `--index-path`, skips the injection); without an index the `search` scans the
+     files directly (tgrep prints its own notice) — a bare query-mode `tgrep`, which would
+     rebuild an index beside the searched path or hang, is never emitted; `-e`/`--regexp`/
+     `-f`/`--file` pattern arguments are tracked so a pattern never masquerades as a path;
    - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim: no tree scan, no block;
    - `ctx_execute`/`ctx_execute_file` shell code is checked line by line; heredoc bodies are
      never rewritten, and inside heredoc-containing blocks family command lines block instead;
