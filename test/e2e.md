@@ -38,8 +38,8 @@ lifecycle (detached serve, git exclude, indexed search, monitor, stop).
    pi -e $EXT -p "Run this exact bash command: rg -n needle src/"
    ```
 
-   Expected: executed command becomes `tgrep -n needle src/` (check session log
-   toolCall arguments for `bash`).
+   Expected: executed command becomes `tgrep search --index-path '<repo>/.tgrep' -n needle src/`
+   (check session log toolCall arguments for `bash`).
 
 4. auto-index lifecycle:
 

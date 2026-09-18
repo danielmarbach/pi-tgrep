@@ -1,11 +1,17 @@
+import path from "node:path";
 import type { BashPolicyMode } from "./config.js";
 
 export interface PolicyContext {
+  /** Direct index directory override (tests, or callers that already resolved it). */
   indexPath?: string;
+  /** Base working directory for resolving relative `cd` targets (defaults to process.cwd()). */
+  cwd?: string;
+  /** Resolves the index directory for a working directory; called with the effective cwd (after any leading `cd`). */
+  resolveIndex?: (cwd: string) => Promise<string | undefined>;
 }
 
 export type BashPolicyAction = 
-  | { action: "allow" }
+  | { action: "allow"; warned?: boolean }
   | { action: "rewrite"; command: string }
   | { action: "block"; reason: string }
   | { action: "warn"; command: string };
@@ -628,7 +634,7 @@ function emitToken(text: string, forceQuote: boolean): string {
   return `'${text.replace(/'/g, "'\\''")}'`;
 }
 
-type SegmentResult = { kind: "verbatim" } | { kind: "rewrite"; text: string } | { kind: "block" };
+type SegmentResult = { kind: "verbatim"; warned?: boolean } | { kind: "rewrite"; text: string } | { kind: "block" };
 
 function policySegment(
   segment: string,
@@ -655,7 +661,10 @@ function policySegment(
   const forceScan = bin === "rg" && rest.includes("--files");
   const minPositionals = translation.patternFlag ? 1 : 2;
   if (translation.positionals.length < minPositionals && !forceScan) return { kind: "verbatim" };
-  const rendered = ["tgrep"];
+  // Without an index directory to point at, a bare tgrep run would scan-or-rebuild on its own;
+  // keep the original command instead so grep semantics stay exact and nothing hangs.
+  if (!indexPath) return { kind: "verbatim", warned: true };
+  const rendered = ["tgrep", "search"];
   const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
   const paths = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
   const allPathsRelative = paths.every((p) => !p.startsWith("/") && !p.startsWith("~"));
@@ -667,18 +676,19 @@ function policySegment(
   return { kind: "rewrite", text: suffix ? `${cmdText} ${suffix.trim()}` : cmdText };
 }
 
-function extractCdPrefix(command: string): { prefix: string; rest: string } | "unsafe" | null {
+function extractCdPrefix(command: string): { prefix: string; rest: string; target: string | null } | "unsafe" | null {
   let pos = 0;
   let prefix = "";
   let segments = 0;
+  let lastTarget: string | null = null;
   for (;;) {
     while (pos < command.length && /\s/.test(command[pos]!)) pos++;
     if (!command.startsWith("cd", pos)) {
-      return segments > 0 ? { prefix, rest: command.slice(pos) } : null;
+      return segments > 0 ? { prefix, rest: command.slice(pos), target: lastTarget } : null;
     }
     const after = command[pos + 2];
     if (after === undefined || !/\s/.test(after)) {
-      return segments > 0 ? { prefix, rest: command.slice(pos) } : null;
+      return segments > 0 ? { prefix, rest: command.slice(pos), target: lastTarget } : null;
     }
     let cursor = pos + 2;
     while (cursor < command.length && /\s/.test(command[cursor]!)) cursor++;
@@ -719,7 +729,9 @@ function extractCdPrefix(command: string): { prefix: string; rest: string } | "u
     }
     if (cursor === targetStart || inSingle || inDouble) return "unsafe";
     if (command[targetStart] === "-") return "unsafe";
+    const target = command.slice(targetStart, cursor);
     segments++;
+    lastTarget = target;
     let j = cursor;
     while (j < command.length && /\s/.test(command[j]!)) j++;
     if (command.startsWith("&&", j)) {
@@ -727,15 +739,19 @@ function extractCdPrefix(command: string): { prefix: string; rest: string } | "u
     } else if (command[j] === ";") {
       pos = j + 1;
     } else {
-      return { prefix: command.slice(0, cursor), rest: command.slice(cursor) };
+      return { prefix: command.slice(0, cursor), rest: command.slice(cursor), target: lastTarget };
     }
     while (pos < command.length && /\s/.test(command[pos]!)) pos++;
     prefix = command.slice(0, pos);
-    if (segments >= 3) return { prefix, rest: command.slice(pos) };
+    if (segments >= 3) return { prefix, rest: command.slice(pos), target: lastTarget };
   }
 }
 
-export function applyBashPolicy(command: string, mode: BashPolicyMode, context?: PolicyContext): BashPolicyAction {
+export async function applyBashPolicy(
+  command: string,
+  mode: BashPolicyMode,
+  context?: PolicyContext,
+): Promise<BashPolicyAction> {
   if (mode === "off") return { action: "allow" };
   if (!FAMILY_PATTERN.test(command)) return { action: "allow" };
   if (mode === "warn") return { action: "warn", command };
@@ -745,13 +761,22 @@ export function applyBashPolicy(command: string, mode: BashPolicyMode, context?:
   const cdPrefix = cd?.prefix ?? "";
   const effective = cd ? cd.rest : command;
 
+  // The index directory is resolved for the directory the command actually runs in: the
+  // leading `cd` target when present, otherwise the policy base cwd.
+  let indexPath = context?.indexPath;
+  if (!indexPath && context?.resolveIndex) {
+    const base = cd?.target ? path.resolve(context.cwd ?? process.cwd(), cd.target) : (context.cwd ?? process.cwd());
+    indexPath = await context.resolveIndex(base);
+  }
+
   const scanned = scanPipeline(effective);
   if (!scanned) return { action: "block", reason: BLOCK_REASON };
 
   const rendered: string[] = [];
   let changed = false;
+  let warned = false;
   for (const part of scanned.parts) {
-    const result = policySegment(part, mode, context?.indexPath);
+    const result = policySegment(part, mode, indexPath);
     switch (result.kind) {
       case "block":
         return { action: "block", reason: BLOCK_REASON };
@@ -760,6 +785,7 @@ export function applyBashPolicy(command: string, mode: BashPolicyMode, context?:
         rendered.push(result.text);
         break;
       case "verbatim":
+        if (result.warned) warned = true;
         rendered.push(part.trim());
         break;
       default: {
@@ -768,7 +794,7 @@ export function applyBashPolicy(command: string, mode: BashPolicyMode, context?:
       }
     }
   }
-  if (!changed) return { action: "allow" };
+  if (!changed) return warned ? { action: "allow", warned: true } : { action: "allow" };
   let text = "";
   for (let i = 0; i < rendered.length; i++) {
     text += rendered[i]!;

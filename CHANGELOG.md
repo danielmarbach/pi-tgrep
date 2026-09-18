@@ -10,6 +10,20 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-18
+
+### Fixed
+
+- Shell `grep`/`rg` commands are now translated to `tgrep search` instead of the bare default
+  query mode, which could hang indefinitely and spawn an orphaned server when no tgrep server
+  was running for the searched directory.
+- A translated command now uses the index of the directory it actually runs in (the leading
+  `cd` target when present), so `cd /other/repo && grep …` searches that repo's index rather
+  than the session repo's.
+- When no index directory exists for the command's working directory, the original
+  `grep`/`rg` command runs unchanged (with a notice) instead of being rewritten into a bare
+  `tgrep` that would scan the tree or rebuild an index beside the searched path.
+
 ## [0.2.2] - 2026-09-16
 
 ### Fixed

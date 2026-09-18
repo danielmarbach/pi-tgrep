@@ -33,16 +33,23 @@ path into the fast one and closes the side doors.
    (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, bare or namespaced like
    `mcp__context-mode__ctx_execute`, extend via `PI_TGREP_WATCH_TOOLS`), pipeline-aware:
    - commands are split on top-level `|`; each segment is judged on its primary binary;
-   - grep/`rg` scan segments (pattern + path present) are transparently translated to `tgrep`
+   - grep/`rg` scan segments (pattern + path present) are transparently translated to
+     `tgrep search` (the CLI's `search` subcommand — it answers from an existing index or
+     scans directly, while the bare default query mode can hang when no server is running)
      with quote-preserving re-emission (`'foo|bar'` stays quoted, translated globs are always
      quoted, `sudo`/`env` prefixes survive);
    - translated bash commands are stamped onto the tool result (`details.engine: "tgrep"`
      plus the rewritten and original commands), so session logs and `npm run analyze`
      attribute shell tgrep usage directly;
-   - when the index exists, translated commands whose positional paths are all relative get
-     `--index-path '<index dir>'` injected (any absolute positional, or an explicit
-     `--index-path`, skips the injection); `-e`/`--regexp`/`-f`/`--file` pattern arguments
-     are tracked so a pattern never masquerades as a path;
+   - the index directory is resolved for the directory the command actually runs in — the
+     leading `cd` target when there is one, otherwise the session cwd — so
+     `cd /other/repo && grep …` searches that repo's index, not the session repo's; when a
+     valid index directory exists, translated commands whose positional paths are all
+     relative get `--index-path '<index dir>'` injected (any absolute positional, or an
+     explicit `--index-path`, skips the injection); with no index available the original
+     command runs verbatim (with a notice) instead of a bare `tgrep`, which would otherwise
+     rebuild an index beside the searched path; `-e`/`--regexp`/`-f`/`--file` pattern
+     arguments are tracked so a pattern never masquerades as a path;
    - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim: no tree scan, no block;
    - `ctx_execute`/`ctx_execute_file` shell code is checked line by line; heredoc bodies are
      never rewritten, and inside heredoc-containing blocks family command lines block instead;
