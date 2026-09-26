@@ -34,20 +34,29 @@ jobs:
       contents: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref_name }}
-          sparse-checkout: package.json
+          sparse-checkout: |
+            package.json
+            package-lock.json
           sparse-checkout-cone-mode: false
 
-      - name: Verify tag matches package version
+      - name: Verify tag matches package and lockfile versions
         if: ${{ !inputs.dry_run }}
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          LOCK_VERSION=$(node -p "require('./package-lock.json').version")
+          LOCK_ROOT_VERSION=$(node -p "require('./package-lock.json').packages[''].version")
           TAG_NAME="${{ inputs.tag || github.ref_name }}"
 
           if [ "$TAG_NAME" != "v$PACKAGE_VERSION" ]; then
             echo "Tag $TAG_NAME does not match package version v$PACKAGE_VERSION"
+            exit 1
+          fi
+
+          if [ "$LOCK_VERSION" != "$PACKAGE_VERSION" ] || [ "$LOCK_ROOT_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "package-lock.json versions ($LOCK_VERSION, packages[\"\"]: $LOCK_ROOT_VERSION) do not match package.json $PACKAGE_VERSION"
             exit 1
           fi
 
@@ -62,12 +71,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -102,7 +111,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref_name }}
           sparse-checkout: CHANGELOG.md

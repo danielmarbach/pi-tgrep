@@ -10,7 +10,7 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-09-26
+## [0.3.1] - 2026-09-26
 
 ### Fixed
 
