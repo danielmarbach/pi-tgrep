@@ -119,7 +119,8 @@ async function runPolicyTests() {
     command: "cd /a && cd /b && tgrep search --index-path '/repo/.tgrep' -n foo .",
   }, IDX);
   await policyCase("cd /x; grep foo .", "translate", { action: "rewrite", command: "cd /x; tgrep search --index-path '/repo/.tgrep' foo ." }, IDX);
-  await policyCase('cd "$(pwd)" && grep foo .', "translate", { action: "block" });
+  // an unresolvable cd target (command substitution) runs the whole command verbatim
+  await policyCase('cd "$(pwd)" && grep foo .', "translate", { action: "allow" });
   // without an index the rewrite still routes through tgrep search, which scans directly
   await policyCase("rg -n needle src/", "translate", { action: "rewrite", command: "tgrep search -n needle src/" });
   await policyCase("cd /tmp && grep -rn foo .", "translate", {
@@ -309,7 +310,7 @@ async function runWatchedToolsTests() {
 
   input = { language: "javascript", code: "execSync(cmd);" };
   r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
-  assert.equal(r.action, "block");
+  assert.equal(r.action, "allow");
 
   input = { language: "javascript", code: "execSync(`grep ${name} .`);" };
   r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);

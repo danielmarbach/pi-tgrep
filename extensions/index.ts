@@ -5,6 +5,7 @@ import path from "node:path";
 import { hasIndexPathOverride, loadConfig, resolveIndexPath } from "../src/config.ts";
 import { applyToolCallPolicy, watchedKey } from "../src/watched-tools.ts";
 import { createGrepToolOverride } from "../src/grep-tool.ts";
+import { buildRewriteNote, isEmptyBashOutput } from "../src/rewrite-annotation.ts";
 import { repoRoot, ServerManager } from "../src/server-manager.ts";
 import { findTgrep, resetBinaryCache, status } from "../src/tgrep-client.ts";
 
@@ -132,7 +133,12 @@ export default function piTgrep(pi: ExtensionAPI) {
     if (!stamp) return;
     rewritten.delete(event.toolCallId);
     if (!isBashToolResult(event)) return;
-    return { details: { ...(event.details ?? {}), engine: "tgrep", command: stamp.command, original: stamp.original } };
+    const details = { ...(event.details ?? {}), engine: "tgrep", command: stamp.command, original: stamp.original };
+    if (event.isError || isEmptyBashOutput(event.content)) {
+      const note = buildRewriteNote(stamp.command, stamp.original);
+      return { details, content: [...event.content, { type: "text", text: note }] };
+    }
+    return { details };
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {

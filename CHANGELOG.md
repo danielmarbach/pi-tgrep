@@ -10,6 +10,33 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-26
+
+### Fixed
+
+- A translated shell grep with an empty pattern (`grep -c "" file`, often used to count lines)
+  no longer loses the pattern. Before, the file name became the pattern and the command printed
+  nothing.
+- Unquoted globs, `~` and brace expansions in translated shell greps (`grep -n foo src/*.ts`)
+  expand again. Before, they reached tgrep as literal text and failed with an IO error.
+- Shell greps over a variable or command substitution (`grep -n foo "$f"`, `grep -rn "$PAT" src`)
+  no longer search for the literal text `$f`/`$PAT`. They now run unchanged.
+- JavaScript run through `ctx_execute` is no longer blocked just for calling `RegExp.exec` (or any
+  other `.exec`/`.spawn` method that isn't `child_process`). Unextractable `child_process` calls
+  are now only blocked when the code mentions grep at all.
+
+### Changed
+
+- When a translated shell grep fails or prints nothing, the tool result now shows which
+  `tgrep search` command ran in place of the original, so the model can tell a real empty
+  result from a translation problem instead of assuming grep is blocked.
+- Shell greps over `$(…)`, backtick or `$var` file lists, and commands behind a dynamic
+  `cd "$DIR" && …`, now run unchanged instead of being blocked. A grep nested inside `$(…)`
+  or backticks is still blocked.
+- `a || grep …` is split and translated like `&&` instead of being blocked.
+- Block messages now say what triggered them (for example command substitution, stdin
+  redirect, or the specific unsupported flag) and mention that piping into grep runs unchanged.
+
 ## [0.2.3] - 2026-09-18
 
 ### Fixed
