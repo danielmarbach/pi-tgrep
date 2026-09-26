@@ -80,7 +80,26 @@ async function applyToShellCode(
   return { action: "rewrite", code: lines.join("\n") };
 }
 
-const JS_EXEC_CALL = /\b(execFileSync|execFile|execSync|spawnSync|spawn|exec)\s*\(/g;
+const JS_EXEC_CALL =
+  /(?:([A-Za-z_$][\w$]*(?:\(\s*['"][^'"]*['"]\s*\))?)\s*\.\s*)?\b(execFileSync|execFile|execSync|spawnSync|spawn|exec)\s*\(/g;
+
+// Identifiers bound to the child_process module: `const cp = require('child_process')`, `import cp from …`.
+const CHILD_PROCESS_ASSIGN =
+  /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?(?:require|import)\(\s*['"](?:node:)?child_process['"]\s*\)/g;
+const CHILD_PROCESS_IMPORT =
+  /import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s*['"](?:node:)?child_process['"]/g;
+const CHILD_PROCESS_REQUIRE_CALL = /^require\(\s*['"](?:node:)?child_process['"]\s*\)$/;
+
+function boundChildProcessIdentifiers(code: string): Set<string> {
+  const names = new Set<string>(["child_process"]);
+  for (const match of code.matchAll(CHILD_PROCESS_ASSIGN)) names.add(match[1]!);
+  for (const match of code.matchAll(CHILD_PROCESS_IMPORT)) names.add(match[1]!);
+  return names;
+}
+
+function isChildProcessReceiver(receiver: string, bound: Set<string>): boolean {
+  return bound.has(receiver) || CHILD_PROCESS_REQUIRE_CALL.test(receiver);
+}
 
 interface JsStringArg {
   quote: string;
@@ -110,13 +129,18 @@ function parseJsFirstStringArg(code: string, from: number): JsStringArg | null {
 }
 
 async function applyJsChildProcessGuard(code: string, mode: BashPolicyMode, context?: PolicyContext): Promise<ToolPolicyAction> {
+  const bound = boundChildProcessIdentifiers(code);
   const calls = [...code.matchAll(JS_EXEC_CALL)];
   let changed = false;
   for (let k = calls.length - 1; k >= 0; k--) {
     const call = calls[k]!;
-    const fn = call[1]!;
+    const receiver = call[1];
+    const fn = call[2]!;
+    // Member calls (X.exec(…)) are only child_process calls when X is bound to the module; bare calls stay guarded.
+    if (receiver !== undefined && !isChildProcessReceiver(receiver, bound)) continue;
     const parse = parseJsFirstStringArg(code, call.index + call[0].length);
     if (!parse) {
+        if (!FAMILY_PATTERN.test(code)) continue;
         return {
           action: "block",
           reason: `${BLOCK_REASON} The command passed to ${fn}() could not be extracted statically, and shell grep inside JavaScript bypasses the tgrep index. Use the grep tool instead.`,

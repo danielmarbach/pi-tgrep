@@ -36,11 +36,15 @@ path into the fast one and closes the side doors.
    - grep/`rg` scan segments (pattern + path present) are transparently translated to
      `tgrep search` (the CLI's `search` subcommand — it answers from an existing index or
      scans directly, while the bare default query mode can hang when no server is running)
-     with quote-preserving re-emission (`'foo|bar'` stays quoted, translated globs are always
-     quoted, `sudo`/`env` prefixes survive);
+     with quote-preserving re-emission (`'foo|bar'` stays quoted, an empty `""` pattern stays
+     an empty argument, unquoted globs/`~`/braces like `src/*.ts` stay unquoted so the shell
+     still expands them, globs translated from `--include` are always quoted, `sudo`/`env`
+     prefixes survive);
    - translated bash commands are stamped onto the tool result (`details.engine: "tgrep"`
      plus the rewritten and original commands), so session logs and `npm run analyze`
-     attribute shell tgrep usage directly;
+     attribute shell tgrep usage directly; when a translated command fails or prints nothing,
+     a `[pi-tgrep] ran … in place of …` line is appended to the output the model sees, so an
+     empty result is never mistaken for a block;
    - the index directory is resolved for the directory the command actually runs in — the
      leading `cd` target when there is one, otherwise the session cwd — so
      `cd /other/repo && grep …` searches that repo's index, not the session repo's; when a
@@ -58,13 +62,20 @@ path into the fast one and closes the side doors.
      `spawn`, `spawnSync`): an embedded shell grep inside a backtick template or
      double-quoted string is translated in place, while single-quoted, escaped, interpolated,
      or statically unextractable commands are blocked, so `execSync('grep -rn …')` can no
-     longer bypass the index;
+     longer bypass the index; member calls only count when the receiver is bound to
+     `child_process` (so `regex.exec(line)` is left alone), and an unextractable command only
+     blocks when the code mentions grep;
    - `ctx_batch_execute` entries are checked individually (the entry's label appears in block
      reasons);
    - output-side redirects are preserved with fd numbers still glued to their redirect
      (`2>/dev/null`, `2>>file`, `2>&1`), so the fd digit never leaks into tgrep as a search path;
-   - `;`, `&&`, `||`, background `&`, backticks, `$()`, and stdin redirects (`<`) are blocked;
-   - unknown flags are blocked with a reason that redirects the model to the `grep` tool;
+   - `;`, `&&` and `||` split the command and each part is judged on its own;
+   - grep whose operands contain a shell expansion (`"$f"`, `$FILES`, `$(find …)`, backticks)
+     greps a dynamic list the index can't help with, so it runs unchanged, as does a command
+     whose leading `cd` target is dynamic; a grep *inside* `$(…)` or backticks, background
+     `&`, and stdin redirects (`<`) are blocked;
+   - every block reason names what triggered it (the construct, or the unsupported flag) and
+     keeps the phrase "bypasses the tgrep index" so `npm run analyze` can count blocks;
      BRE-only patterns (`\(`, `\1`, …) and `ag`/`ack`/`pt` (flag semantics diverge from
      rg/tgrep) run the original command untranslated, exact but slow; under
      `PI_TGREP_BASH_POLICY=block` both are still blocked;
