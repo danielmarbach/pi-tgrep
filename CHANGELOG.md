@@ -10,6 +10,15 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-27
+
+### Fixed
+
+- Shell `grep` patterns with an unescaped `| ( ) { } + ?` (literal in basic regex, but a regex
+  operator in tgrep's engine) are no longer silently mistranslated, which could match far more
+  than the original pattern or fail with a regex parse error. These now run as plain `grep`
+  unchanged.
+
 ## [0.3.1] - 2026-09-26
 
 ### Fixed
