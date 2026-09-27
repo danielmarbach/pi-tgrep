@@ -23,6 +23,13 @@ async function runFallbackTests() {
   await policyCase("egrep '(a)\\1' .", "translate", { action: "allow" });
   await policyCase("grep -rn 'a\\(b\\)\\+' src/", "block", { action: "block" });
 
+  // Unescaped BRE metacharacters are literal text in real grep but regex operators in tgrep's
+  // engine, so these must also run verbatim instead of being silently mistranslated.
+  await policyCase("grep -n '^| \`list\`' README.md AGENT.md", "translate", { action: "allow" });
+  await policyCase("grep -rn 'a(b)+' src/", "translate", { action: "allow" });
+  await policyCase("grep -n 'a{2,3}' f", "translate", { action: "allow" });
+  await policyCase("grep -n 'a?' f", "translate", { action: "allow" });
+
   // ERE literal escapes are valid in the default engine and translate
   await policyCase("egrep '\\(x\\)' .", "translate", {
     action: "rewrite",

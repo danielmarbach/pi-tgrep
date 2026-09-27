@@ -224,9 +224,23 @@ const BACKREF_PATTERN = /\\[1-9]/;
 
 type GrepEngine = "fixed" | "ere" | "pcre" | "bre";
 
+/** In BRE, `(){}+?|` are literal unless backslash-escaped; tgrep's engine always treats them as
+ * regex operators, so an unescaped one here would silently change meaning once translated. */
+function hasUnescapedBreMetachar(pattern: string): boolean {
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i] === "\\") {
+      i++;
+      continue;
+    }
+    if ("(){}+?|".includes(pattern[i]!)) return true;
+  }
+  return false;
+}
+
 function patternNeedsFallback(pattern: string, engine: GrepEngine): boolean {
   if (engine === "fixed" || engine === "pcre") return false;
-  return (engine === "bre" ? BRE_ONLY_PATTERN : BACKREF_PATTERN).test(pattern);
+  if (engine === "bre") return BRE_ONLY_PATTERN.test(pattern) || hasUnescapedBreMetachar(pattern);
+  return BACKREF_PATTERN.test(pattern);
 }
 
 interface Token {
