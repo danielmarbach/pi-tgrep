@@ -56,7 +56,8 @@ path into the fast one and closes the side doors.
      `-f`/`--file` pattern arguments are tracked so a pattern never masquerades as a path;
    - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim: no tree scan, no block;
    - `ctx_execute`/`ctx_execute_file` shell code is checked line by line; heredoc bodies are
-     never rewritten, and inside heredoc-containing blocks family command lines block instead;
+     never rewritten, and inside heredoc-containing blocks a family command line that would
+     be translated blocks instead (lines that run unchanged, like `… | grep x`, still pass);
    - non-shell `ctx_execute`/`ctx_execute_file` code (e.g. JavaScript) is scanned for
      `child_process` exec/spawn calls (`exec`, `execSync`, `execFile`, `execFileSync`,
      `spawn`, `spawnSync`): an embedded shell grep inside a backtick template or

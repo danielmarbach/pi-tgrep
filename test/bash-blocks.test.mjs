@@ -105,9 +105,37 @@ async function runOrSeparatorTests() {
   console.log("|| separator tests ok");
 }
 
+async function runHeredocTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // The body is data: `<`, quotes, `|`, `&` and the word grep inside it are not shell syntax.
+  await policyCase(
+    "cat > a.csproj <<'EOF'\n<Project Sdk=\"x\">\n</Project>\nEOF\ndotnet build 2>&1 | grep -E \"warning\" | sort -u",
+    "translate",
+    { action: "allow" },
+    IDX,
+  );
+  await policyCase("cat <<EOF\nit's a | b & c; grep -rn foo src\nEOF\necho done", "translate", { action: "allow" }, IDX);
+  await policyCase("cat <<-EOF\n\tbody <\n\tEOF\nls", "translate", { action: "allow" }, IDX);
+  await policyCase("cat <<'A' <<'B'\none <\nA\ntwo <\nB\nls", "translate", { action: "allow" }, IDX);
+  // A real grep on another segment is still translated, with the heredoc body kept byte for byte.
+  await policyCase("grep -rn foo src && cat <<'EOF'\n<y> it's\nEOF", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src && cat <<'EOF'\n<y> it's\nEOF",
+  }, IDX);
+  // A heredoc is the grep's stdin; tgrep search doesn't read stdin, so it runs unchanged.
+  await policyCase("grep -rn foo src <<EOF\nx\nEOF", "translate", { action: "allow" }, IDX);
+  // Here-strings are stdin data too.
+  await policyCase("cat <<< \"<x>\" | wc -l", "translate", { action: "allow" }, IDX);
+  // A bare < outside a heredoc is still an input redirect.
+  const redirect = await policyCase("cat <<EOF\nx\nEOF\ngrep foo < in.txt", "translate", { action: "block" });
+  assert.match(redirect.reason, /redirected via </);
+  console.log("heredoc tests ok");
+}
+
 await runShellExpansionAllowTests();
 await runShellExpansionTranslateTests();
 await runNestedSearchBlockTests();
 await runSpecificReasonTests();
 await runOrSeparatorTests();
+await runHeredocTests();
 console.log("ALL BLOCK TESTS PASSED");

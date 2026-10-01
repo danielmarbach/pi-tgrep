@@ -10,6 +10,18 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-01
+
+### Fixed
+
+- Shell commands that contain a heredoc (`cat > f <<'EOF' … EOF`) next to a `grep` are no longer
+  rejected. The heredoc body was scanned as shell, so a `<` (for example XML) was reported as
+  "Input redirected via <" and an apostrophe as "quoting couldn't be parsed". Heredoc bodies are
+  now left untouched, and here-strings (`<<<`) are allowed.
+- `ctx_execute` / `ctx_execute_file` shell code that contains a heredoc no longer blocks a
+  `cmd | grep x` pipe (with a misleading `PI_TGREP_BASH_POLICY=block` message), and a here-string
+  (`<<<`) is no longer mistaken for a heredoc that hid the grep lines after it from translation.
+
 ## [0.3.2] - 2026-09-27
 
 ### Fixed
