@@ -20,6 +20,8 @@ export const FAMILY_PATTERN = /\b(grep|egrep|fgrep|rg|ag|ack|pt)\b/;
 const FAMILY_TOKEN = /^(grep|egrep|fgrep|rg|ag|ack|pt)$/;
 const SCAN_ONLY_FAMILY = /^(ag|ack|pt)$/;
 const PREFIX_TOKENS = new Set(["sudo", "env", "command", "exec", "nice", "nohup", "time"]);
+/** Keywords that can precede a command on the same line, as in `then grep …` or `if grep -q …`. */
+const KEYWORD_PREFIXES = new Set(["if", "elif", "while", "until", "then", "else", "do", "!", "{"]);
 
 /** Binaries recognized by the grep family policy; scoped narrowly to keep matching exhaustive. */
 type GrepFamilyBinary = "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "pt";
@@ -731,7 +733,11 @@ function stripPrefixes(tokens: Token[]): { prefixes: string[]; rest: Token[]; ok
   for (;;) {
     const head = rest[0];
     if (head === undefined) return { prefixes, rest, ok: false };
-    if (PREFIX_TOKENS.has(head.text) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(head.text)) {
+    if (
+      PREFIX_TOKENS.has(head.text) ||
+      (!head.quoted && KEYWORD_PREFIXES.has(head.text)) ||
+      /^[A-Za-z_][A-Za-z0-9_]*=/.test(head.text)
+    ) {
       prefixes.push(renderPrefix(head));
       rest.shift();
       continue;
@@ -984,9 +990,14 @@ type Cwd = string | null;
 /** The directory after `part` if it is a `cd`, undefined if it is any other command. */
 function cwdAfterCd(part: string, cwd: Cwd): Cwd | undefined {
   const tokens = tokenizeDetailed(splitRedirect(part).cmd);
-  if (!tokens || tokens[0]?.text !== "cd") return undefined;
-  const target = tokens[1];
-  if (tokens.length !== 2 || !target || target.expansion || /^[-~]/.test(target.text)) return null;
+  if (!tokens) return undefined;
+  let cd = 0;
+  while (tokens[cd] && !tokens[cd]!.quoted && KEYWORD_PREFIXES.has(tokens[cd]!.text)) cd++;
+  if (tokens[cd]?.text !== "cd") return undefined;
+  // Under if/then/do the cd runs conditionally or repeatedly, so where the shell ends up is unknown.
+  if (cd > 0 && tokens[cd - 1]!.text !== "{") return null;
+  const target = tokens[cd + 1];
+  if (tokens.length !== cd + 2 || !target || target.expansion || /^[-~]/.test(target.text)) return null;
   if (path.isAbsolute(target.text)) return target.text;
   return cwd === null ? null : path.resolve(cwd, target.text);
 }

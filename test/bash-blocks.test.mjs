@@ -238,6 +238,61 @@ async function runReviewRegressionTests() {
   console.log("review regression tests ok");
 }
 
+async function runKeywordPrefixTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // A grep after a shell keyword on the same line is still a grep.
+  await policyCase("for f in a b; do grep -rn foo src; done", "translate", {
+    action: "rewrite",
+    command: "for f in a b; do tgrep search --index-path '/repo/.tgrep' -n foo src; done",
+  }, IDX);
+  await policyCase("if grep -q foo src/a.ts; then\n  echo found\nfi", "translate", {
+    action: "rewrite",
+    command: "if tgrep search --index-path '/repo/.tgrep' -q foo src/a.ts; then\n  echo found\nfi",
+  }, IDX);
+  await policyCase("while grep -q foo src/a.ts; do sleep 1; done", "translate", {
+    action: "rewrite",
+    command: "while tgrep search --index-path '/repo/.tgrep' -q foo src/a.ts; do sleep 1; done",
+  }, IDX);
+  await policyCase("if true; then grep -rn a src; else grep -rn b src; fi", "translate", {
+    action: "rewrite",
+    command:
+      "if true; then tgrep search --index-path '/repo/.tgrep' -n a src; " +
+      "else tgrep search --index-path '/repo/.tgrep' -n b src; fi",
+  }, IDX);
+  await policyCase("! grep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "! tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("{ grep -rn foo src; }", "translate", {
+    action: "rewrite",
+    command: "{ tgrep search --index-path '/repo/.tgrep' -n foo src; }",
+  }, IDX);
+  // Unchanged cases stay unchanged: stdin filters, dynamic operands, a quoted word that isn't a keyword.
+  await policyCase("if cmd | grep -q foo; then echo y; fi", "translate", { action: "allow" }, IDX);
+  await policyCase('do_it=1; then_x=2; "then" grep', "translate", { action: "allow" }, IDX);
+  await policyCase('for f in a; do grep -n foo "$f"; done', "translate", { action: "allow" }, IDX);
+  // Block mode now sees a grep in a condition too.
+  await policyCase("if grep -q foo src/a.ts; then echo y; fi", "block", { action: "block" });
+  // A cd under a keyword is conditional or repeated, so the directory is unknown afterwards.
+  const resolver = { cwd: "/base", resolveIndex: async (cwd) => `${cwd}/.tgrep` };
+  await policyCase('for d in a b; do cd "$d"; make; cd ..; done\ngrep -rn foo src', "translate", { action: "allow" }, resolver);
+  await policyCase("if true; then cd /x; fi\ngrep -rn foo src", "translate", { action: "allow" }, resolver);
+  // A { } group runs in this shell, so its cd is real.
+  await policyCase("{ cd /x; grep -rn foo src; }", "translate", {
+    action: "rewrite",
+    command: "{ cd /x; tgrep search --index-path '/x/.tgrep' -n foo src; }",
+  }, resolver);
+  // A condition with a flag that has no tgrep translation is blocked like any other grep.
+  const unsupported = await policyCase("if grep -qz x f; then echo y; fi", "translate", { action: "block" }, IDX);
+  assert.match(unsupported.reason, /-z is not recognized/);
+  // A loop that is backgrounded is translated, not blocked.
+  await policyCase("for f in a; do grep -rn x src; done &", "translate", {
+    action: "rewrite",
+    command: "for f in a; do tgrep search --index-path '/repo/.tgrep' -n x src; done &",
+  }, IDX);
+  console.log("keyword prefix tests ok");
+}
+
 async function runCdTrackingTests() {
   const calls = [];
   const resolver = {
@@ -278,4 +333,5 @@ await runHeredocTests();
 await runMultiLineTests();
 await runCdTrackingTests();
 await runReviewRegressionTests();
+await runKeywordPrefixTests();
 console.log("ALL BLOCK TESTS PASSED");

@@ -10,8 +10,17 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-01
+
 ### Changed
 
+- A `grep` after a shell keyword on the same line (`do grep …`, `then grep …`, `else grep …`,
+  `if grep -q …; then`, `while grep …`, `! grep …`, `{ grep …`) is now translated like any other,
+  instead of running unchanged. A grep in a condition with a flag tgrep can't translate
+  (`if grep -qz …`) is now blocked, as it is on its own line. Grep inside a `case` arm or a
+  `( … )` subshell still runs unchanged.
+- A `cd` under `if` / `then` / `do` is treated as an unknown directory for the commands after it,
+  since it may run conditionally or repeatedly.
 - A `grep` on its own line in a multi-line `bash` command or `ctx_execute` / `ctx_execute_file`
   shell script is now translated like any other, including after a heredoc, instead of running
   unchanged (or, after a heredoc in a script, being blocked). `# comments` are ignored.
@@ -35,7 +44,6 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   instead of becoming `FOO=a b tgrep …`.
 - A `cd` that feeds a pipe or runs in the background no longer changes the directory used to find
   the index for later commands.
-
 - A grep that reads a here-string (`grep foo <<< "x"`) runs unchanged instead of being mistranslated.
 - A backslash-newline line continuation in a grep command is no longer passed to `tgrep` as a
   literal argument.
