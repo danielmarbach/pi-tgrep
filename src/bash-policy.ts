@@ -350,6 +350,58 @@ interface ScannedCommand {
   kind: "parts";
   parts: string[];
   separators: string[];
+  /** Heredoc bodies (terminator included); parts carry an opaque marker in their place. */
+  heredocs: string[];
+}
+
+const HEREDOC_MARKER = /\u0001H(\d+)\u0001/g;
+
+function restoreHeredocs(text: string, heredocs: string[]): string {
+  return text.replace(HEREDOC_MARKER, (_, n: string) => heredocs[Number(n)]!);
+}
+
+interface PendingHeredoc {
+  delimiter: string;
+  stripTabs: boolean;
+}
+
+/** Reads the heredoc delimiter word starting at `start`; returns its unquoted value and end index. */
+function readHeredocDelimiter(command: string, start: number): { delimiter: string; end: number } | null {
+  let i = start;
+  while (command[i] === " " || command[i] === "\t") i++;
+  let delimiter = "";
+  const wordStart = i;
+  while (i < command.length && !/[\s;&|<>()]/.test(command[i]!)) {
+    const c = command[i]!;
+    if (c === "'" || c === '"') {
+      const close = command.indexOf(c, i + 1);
+      if (close === -1) return null;
+      delimiter += command.slice(i + 1, close);
+      i = close + 1;
+    } else if (c === "\\") {
+      if (i + 1 >= command.length) return null;
+      delimiter += command[i + 1];
+      i += 2;
+    } else {
+      delimiter += c;
+      i++;
+    }
+  }
+  return i === wordStart ? null : { delimiter, end: i };
+}
+
+/** Consumes lines from `from` up to and including the terminator line. */
+function consumeHeredocBody(command: string, from: number, heredoc: PendingHeredoc): number {
+  let pos = from;
+  while (pos < command.length) {
+    const eol = command.indexOf("\n", pos);
+    const lineEnd = eol === -1 ? command.length : eol;
+    let line = command.slice(pos, lineEnd);
+    if (heredoc.stripTabs) line = line.replace(/^\t+/, "");
+    pos = eol === -1 ? command.length : eol + 1;
+    if (line === heredoc.delimiter) break;
+  }
+  return pos;
 }
 
 type ScanResult = ScannedCommand | { kind: "block"; reason: string };
@@ -427,6 +479,8 @@ function consumeBacktickSubstitution(command: string, backtick: number): { end: 
 function scanPipeline(command: string): ScanResult {
   const parts: string[] = [];
   const separators: string[] = [];
+  const heredocs: string[] = [];
+  const pending: PendingHeredoc[] = [];
   let current = "";
   let inSingle = false;
   let inDouble = false;
@@ -495,18 +549,31 @@ function scanPipeline(command: string): ScanResult {
       i += 2;
       continue;
     }
+    if (c === "\n" && pending.length > 0) {
+      current += c;
+      i++;
+      for (const heredoc of pending.splice(0)) {
+        const end = consumeHeredocBody(command, i, heredoc);
+        current += `\u0001H${heredocs.length}\u0001`;
+        heredocs.push(command.slice(i, end));
+        i = end;
+      }
+      continue;
+    }
     if (c === "<") {
       if (command[i + 1] !== "<") return { kind: "block", reason: STDIN_REDIRECT_BLOCK_REASON };
-      current += "<<";
-      i += 2;
-      if (command[i] === "-") {
-        current += "-";
-        i++;
+      if (command[i + 2] === "<") {
+        // Here-string: the word that follows is scanned as an ordinary operand.
+        current += "<<<";
+        i += 3;
+        continue;
       }
-      while (i < command.length && /[A-Za-z0-9_'"]/.test(command[i]!)) {
-        current += command[i]!;
-        i++;
-      }
+      const stripTabs = command[i + 2] === "-";
+      const word = readHeredocDelimiter(command, i + (stripTabs ? 3 : 2));
+      if (!word) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+      current += command.slice(i, word.end);
+      pending.push({ delimiter: word.delimiter, stripTabs });
+      i = word.end;
       continue;
     }
     if (c === "$" && command[i + 1] === "(") {
@@ -552,7 +619,7 @@ function scanPipeline(command: string): ScanResult {
     i++;
   }
   parts.push(current);
-  return { kind: "parts", parts, separators };
+  return { kind: "parts", parts, separators, heredocs };
 }
 
 function splitRedirect(segment: string): { cmd: string; suffix: string } {
@@ -797,13 +864,16 @@ function policySegment(
   mode: BashPolicyMode,
   indexPath?: string,
 ): SegmentResult {
-  const { cmd, suffix } = splitRedirect(segment);
+  const hasHeredoc = segment.includes("\u0001H");
+  const { cmd, suffix } = splitRedirect(segment.replace(HEREDOC_MARKER, ""));
   const tokens = tokenizeDetailed(cmd);
   if (!tokens) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
   const { prefixes, rest, ok } = stripPrefixes(tokens);
   const bin = rest[0]?.text;
   if (!ok || !bin || !isGrepFamilyBinary(bin)) return { kind: "verbatim" };
   if (mode === "block") return { kind: "block", reason: POLICY_BLOCK_REASON };
+  // A heredoc feeds this command's stdin, which tgrep doesn't read.
+  if (hasHeredoc) return { kind: "verbatim" };
   // A shell expansion in an operand greps an explicit, dynamic list we can't resolve statically.
   if (rest.some((t) => t.expansion)) return { kind: "verbatim" };
   if (isScanOnlyBinary(bin)) return { kind: "verbatim" };
@@ -958,5 +1028,5 @@ export async function applyBashPolicy(
     text += rendered[i]!;
     if (i < scanned.separators.length) text += ` ${scanned.separators[i]!} `;
   }
-  return { action: "rewrite", command: (cdPrefix + text).trimEnd() };
+  return { action: "rewrite", command: restoreHeredocs((cdPrefix + text).trimEnd(), scanned.heredocs) };
 }
