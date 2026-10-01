@@ -173,7 +173,7 @@ async function runCompoundCommandTests() {
   }, IDX);
   await policyCase("echo hi; grep foo bar", "translate", {
     action: "rewrite",
-    command: "echo hi ; tgrep search --index-path '/repo/.tgrep' foo bar",
+    command: "echo hi; tgrep search --index-path '/repo/.tgrep' foo bar",
   }, IDX);
   await policyCase("grep -rn foo src/ && npm test", "translate", {
     action: "rewrite",
@@ -185,7 +185,7 @@ async function runCompoundCommandTests() {
   }, IDX);
   await policyCase("grep foo .;", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' foo . ;",
+    command: "tgrep search --index-path '/repo/.tgrep' foo .;",
   }, IDX);
 
   // pure pipelines keep their exact rendering

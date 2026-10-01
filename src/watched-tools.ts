@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { BashPolicyMode } from "./config.ts";
 import { applyBashPolicy, BLOCK_REASON, FAMILY_PATTERN, type PolicyContext } from "./bash-policy.ts";
 
@@ -14,69 +13,6 @@ export function watchedKey(toolName: string, watchedTools: string[]): string | n
     if (toolName === watched || toolName.endsWith(`__${watched}`)) return watched;
   }
   return null;
-}
-
-const HEREDOC_MARKER = /(?<!<)<<(?!<)-?\s*(\S+)/;
-const HEREDOC_BLOCK_REASON = `${BLOCK_REASON} Grep lines aren't rewritten in a shell block that contains a heredoc; run the grep as its own command.`;
-const PLAIN_CD = /^cd\s+(\S+)\s*$/;
-
-// A plain `cd <target>` line changes the directory for the lines that follow in a shell block.
-function dirAfterCd(dir: string | undefined, trimmed: string): string | undefined {
-  if (dir === undefined) return undefined;
-  const match = PLAIN_CD.exec(trimmed);
-  if (!match) return dir;
-  const target = match[1]!;
-  if (target === "-" || target.startsWith("-") || target.startsWith("~")) return dir;
-  if (UNSAFE_CD_TARGET.test(target)) return dir;
-  return path.resolve(dir, target);
-}
-
-// Characters that make a cd target impossible to resolve statically.
-const UNSAFE_CD_TARGET = /[$`'"|&;<>()*?[\]{}#]/;
-
-async function applyToShellCode(
-  code: string,
-  mode: BashPolicyMode,
-  context?: PolicyContext,
-): Promise<ToolPolicyAction> {
-  const hasHeredoc = HEREDOC_MARKER.test(code);
-  const lines = code.split("\n");
-  let heredocEnd: string | null = null;
-  let changed = false;
-  let dir = context?.cwd;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (heredocEnd !== null) {
-      if (line.trim() === heredocEnd) heredocEnd = null;
-      continue;
-    }
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      if (HEREDOC_MARKER.test(line)) {
-        const marker = HEREDOC_MARKER.exec(line)?.[1];
-        if (marker) heredocEnd = marker.replace(/^['"]|['"]$/g, "");
-      }
-      continue;
-    }
-    const result = await applyBashPolicy(line, mode, { ...context, cwd: dir });
-    const rewriteBlockedByHeredoc = hasHeredoc && result.action === "rewrite";
-    if (result.action === "block" || rewriteBlockedByHeredoc) {
-      const reason = result.action === "block" ? result.reason : HEREDOC_BLOCK_REASON;
-      return { action: "block", reason: `${reason} (line ${i + 1}: ${trimmed.slice(0, 120)})` };
-    }
-    if (result.action === "rewrite") {
-      const indent = line.slice(0, line.length - trimmed.length);
-      lines[i] = `${indent}${result.command}`;
-      changed = true;
-    }
-    if (!heredocEnd) {
-      const marker = HEREDOC_MARKER.exec(line)?.[1];
-      if (marker) heredocEnd = marker.replace(/^['"]|['"]$/g, "");
-    }
-    dir = dirAfterCd(dir, trimmed);
-  }
-  if (!changed) return { action: "allow" };
-  return { action: "rewrite", code: lines.join("\n") };
 }
 
 const JS_EXEC_CALL =
@@ -233,10 +169,10 @@ export async function applyToolCallPolicy(
     if (mode === "warn") {
       return FAMILY_PATTERN.test(code) ? { action: "allow", warned: true } : { action: "allow" };
     }
-    const result = await applyToShellCode(code, mode, context);
+    const result = await applyBashPolicy(code, mode, context);
     if (result.action === "block") return { action: "block", reason: result.reason };
-    if (result.action === "rewrite" && typeof result.code === "string") {
-      input.code = result.code;
+    if (result.action === "rewrite") {
+      input.code = result.command;
       return { action: "rewrite" };
     }
     return { action: "allow" };

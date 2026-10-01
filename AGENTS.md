@@ -33,23 +33,19 @@ Pushing the tag triggers [`.github/workflows/publish.yml`](./.github/workflows/p
 which verifies the tag matches `package.json`, runs typecheck/tests, publishes to npm, creates a
 GitHub release from the matching `CHANGELOG.md` section, and closes the milestone titled `vx.y.z`.
 
-## Shell command handling has several entry points
+## Shell command handling
 
-Shell syntax is parsed in more than one place. A change to how commands are scanned (heredocs,
-here-strings, quoting, redirects, separators, `cd`) usually has to be applied to all of them, or
-one tool behaves differently from the others.
+Shell syntax (quoting, heredocs, here-strings, redirects, separators, comments, `cd`) is parsed in
+exactly one place: `scanPipeline` and `applyBashPolicy` in `src/bash-policy.ts`. Every watched tool
+goes through it, so a scanning change applies to all of them:
 
-| Entry point | Tool | Parsing |
-| --- | --- | --- |
-| `applyBashPolicy` in `src/bash-policy.ts` | `bash`, custom watched tools, each `ctx_batch_execute` command, and every command the paths below hand it | `scanPipeline` splits the whole command; this is the real shell scanner |
-| `applyToShellCode` in `src/watched-tools.ts` | `ctx_execute` / `ctx_execute_file` with `language: "shell"` | Splits on newlines itself and tracks heredoc bodies with its own `HEREDOC_MARKER` before calling `applyBashPolicy` per line |
-| `applyJsChildProcessGuard` in `src/watched-tools.ts` | `ctx_execute` / `ctx_execute_file` with other languages | Extracts the string passed to `exec`/`spawn`, then calls `applyBashPolicy` on it |
+- `bash`, custom watched tools, and each `ctx_batch_execute` command pass the command as is.
+- `ctx_execute` / `ctx_execute_file` with `language: "shell"` pass the whole script. Newlines are
+  command separators, so a script is not scanned line by line.
+- `ctx_execute` / `ctx_execute_file` in other languages go through `applyJsChildProcessGuard`
+  in `src/watched-tools.ts`, which only extracts the string given to `exec`/`spawn` and hands it
+  to `applyBashPolicy`.
 
-When touching any of these:
-
-- Check whether the same rule exists in the others (`HEREDOC_MARKER` and `scanPipeline` both
-  decide what a heredoc is and must agree on `<<`, `<<-` and `<<<`).
-- Add a test per entry point: `test/bash-blocks.test.mjs` for `applyBashPolicy`,
-  `test/harness.mjs` for `applyToolCallPolicy` (`bash`, `ctx_execute`, `ctx_batch_execute`), and
-  `test/js-guard.test.mjs` for the JavaScript guard.
-- Update the matching README bullet, which documents the per-tool behavior.
+Do not add a second shell parser in `watched-tools.ts`. Test a scanning change in
+`test/bash-blocks.test.mjs`, and test a tool-specific change through `applyToolCallPolicy` in
+`test/harness.mjs` or `test/js-guard.test.mjs`. The README documents the per-tool behavior.

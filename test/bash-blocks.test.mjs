@@ -28,7 +28,7 @@ async function runShellExpansionAllowTests() {
 async function runShellExpansionTranslateTests() {
   await policyCase("x=$(date); grep -rn foo src", "translate", {
     action: "rewrite",
-    command: "x=$(date) ; tgrep search -n foo src",
+    command: "x=$(date); tgrep search -n foo src",
   });
   // $ inside single quotes is a literal, not an expansion
   await policyCase("grep -rn 'literal $x in single quotes' src", "translate", {
@@ -132,10 +132,150 @@ async function runHeredocTests() {
   console.log("heredoc tests ok");
 }
 
+async function runMultiLineTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // A newline separates commands like ; does, so a grep on its own line is translated.
+  await policyCase("echo a\ngrep -rn foo src\necho b", "translate", {
+    action: "rewrite",
+    command: "echo a\ntgrep search --index-path '/repo/.tgrep' -n foo src\necho b",
+  }, IDX);
+  // Indentation survives, and so does a pipeline that continues on the next line.
+  await policyCase("for f in a b; do\n  grep -rn foo src\ndone", "translate", {
+    action: "rewrite",
+    command: "for f in a b; do\n  tgrep search --index-path '/repo/.tgrep' -n foo src\ndone",
+  }, IDX);
+  await policyCase("grep -rn foo src |\n  head -3", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src |\n  head -3",
+  }, IDX);
+  // An escaped newline is a continuation, not a separator.
+  await policyCase("grep -rn \\\n  foo src", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // Comments are not scanned: an apostrophe or grep in one is inert.
+  await policyCase("# it's a grep -rn foo src\necho hi", "translate", { action: "allow" }, IDX);
+  await policyCase("echo hi # don't grep\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "echo hi # don't grep\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // ;; closes a case arm and must not become "; ;".
+  await policyCase("case $x in\n  a) echo a ;;\nesac\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "case $x in\n  a) echo a ;;\nesac\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // Grep reading a here-string has stdin data; it is not translated.
+  await policyCase('grep -n foo src <<< "foo"', "translate", { action: "allow" }, IDX);
+  // Redirects and backgrounding only block the grep they apply to, not unrelated lines of a script.
+  await policyCase("while read l; do echo $l; done < in.txt\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "while read l; do echo $l; done < in.txt\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("server &\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "server &\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("sleep 1 && grep foo . &\necho done", "translate", { action: "block" }, IDX);
+  await policyCase("cat < in.txt | grep foo", "translate", { action: "allow" }, IDX);
+  // A block reason names the offending segment when the command spans lines.
+  const multiLineBlock = await policyCase("echo a\ngrep --nonexistent-flag foo .", "translate", { action: "block" });
+  assert.match(multiLineBlock.reason, /\(in: grep --nonexistent-flag foo \.\)/);
+  console.log("multi-line tests ok");
+}
+
+async function runReviewRegressionTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // A > in a trailing comment stays a comment.
+  await policyCase("grep -rn foo src # TODO: 2>&1 > notes.txt", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src # TODO: 2>&1 > notes.txt",
+  }, IDX);
+  await policyCase("grep -rn foo src 2>/dev/null # x > y", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src 2>/dev/null # x > y",
+  }, IDX);
+  // $'…' with an escaped quote doesn't swallow the rest of the script.
+  await policyCase("printf $'it\\'s\\n'\nps aux | grep node", "translate", { action: "allow" }, IDX);
+  await policyCase("printf $'it\\'s\\n'\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "printf $'it\\'s\\n'\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // A $'…' operand can't be resolved statically, so that grep runs unchanged.
+  await policyCase("grep -rn $'a\\tb' src", "translate", { action: "allow" }, IDX);
+  // An unparseable segment only blocks when the swallowed text contains a grep.
+  await policyCase("grep -rn foo src\necho 'oops", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src\necho 'oops",
+  }, IDX);
+  const swallowed = await policyCase("echo 'oops\ngrep -rn foo src", "translate", { action: "block" }, IDX);
+  assert.match(swallowed.reason, /quoting couldn't be parsed/);
+  // A deferred < or & block needs an actual grep command, not the word grep in an argument.
+  await policyCase("sort < grep-results.txt\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "sort < grep-results.txt\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("npm run rg-server &\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "npm run rg-server &\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // Assignment prefixes keep their quoting; an unquoted ~ still expands.
+  await policyCase("FOO='a b' grep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "FOO='a b' tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("FOO=~/x grep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "FOO=~/x tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // A cd that feeds a pipe or runs in the background is a subshell and doesn't move this shell.
+  const calls = [];
+  const resolver = { cwd: "/base", resolveIndex: async (cwd) => (calls.push(cwd), `${cwd}/.tgrep`) };
+  await policyCase("cd /x | cat\ncd /y &\ngrep -rn a src", "translate", {
+    action: "rewrite",
+    command: "cd /x | cat\ncd /y &\ntgrep search --index-path '/base/.tgrep' -n a src",
+  }, resolver);
+  assert.deepEqual(calls, ["/base"]);
+  console.log("review regression tests ok");
+}
+
+async function runCdTrackingTests() {
+  const calls = [];
+  const resolver = {
+    cwd: "/base",
+    resolveIndex: async (cwd) => {
+      calls.push(cwd);
+      return `${cwd}/.tgrep`;
+    },
+  };
+  // Each grep resolves the index for the directory it actually runs in, wherever the cd is.
+  const r = await policyCase("grep -rn a src\ncd /one\ngrep -rn b src\ncd ../two\ngrep -rn c src", "translate", {
+    action: "rewrite",
+    command:
+      "tgrep search --index-path '/base/.tgrep' -n a src\ncd /one\n" +
+      "tgrep search --index-path '/one/.tgrep' -n b src\ncd ../two\n" +
+      "tgrep search --index-path '/two/.tgrep' -n c src",
+  }, resolver);
+  assert.equal(r.action, "rewrite");
+  assert.deepEqual(calls, ["/base", "/one", "/two"]);
+  // After a cd whose target is dynamic, later greps run verbatim (the index is unknowable) until an absolute cd.
+  await policyCase('cd "$D"\ngrep -rn a src', "translate", { action: "allow" }, resolver);
+  await policyCase('cd "$D"\ncd /abs\ngrep -rn a src', "translate", {
+    action: "rewrite",
+    command: 'cd "$D"\ncd /abs\ntgrep search --index-path \'/abs/.tgrep\' -n a src',
+  }, resolver);
+  await policyCase('cd "$D"\ngrep -rn a src', "block", { action: "block" }, resolver);
+  // ~ and bare cd can't be resolved statically either.
+  await policyCase("cd ~/proj && grep -rn a src", "translate", { action: "allow" }, resolver);
+  console.log("cd tracking tests ok");
+}
+
 await runShellExpansionAllowTests();
 await runShellExpansionTranslateTests();
 await runNestedSearchBlockTests();
 await runSpecificReasonTests();
 await runOrSeparatorTests();
 await runHeredocTests();
+await runMultiLineTests();
+await runCdTrackingTests();
+await runReviewRegressionTests();
 console.log("ALL BLOCK TESTS PASSED");

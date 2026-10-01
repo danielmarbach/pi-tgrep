@@ -10,6 +10,36 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+### Changed
+
+- A `grep` on its own line in a multi-line `bash` command or `ctx_execute` / `ctx_execute_file`
+  shell script is now translated like any other, including after a heredoc, instead of running
+  unchanged (or, after a heredoc in a script, being blocked). `# comments` are ignored.
+- Each `grep` in a script uses the index of the directory it runs in, following `cd` lines. After
+  a `cd` whose target can't be resolved (`cd "$DIR"`, `cd ~/x`), later greps run unchanged until
+  an absolute `cd`.
+- A rewritten command keeps your original spacing around `;`, `&&`, `||` and `|` (for example
+  `a; grep …` becomes `a; tgrep search …`, not `a ; tgrep search …`).
+- A stdin redirect (`<`) or `&` backgrounding now blocks only the grep it applies to, not every
+  other command in the same script.
+- A grep inside a multi-line `$( … )` in a `ctx_execute` / `ctx_execute_file` script is now
+  blocked, as it already was in `bash`; before, the script scan translated it line by line.
+
+### Fixed
+
+- A `>` inside a trailing `# comment` after a grep (`grep foo src # a > b`) is no longer treated
+  as a redirect, which made the rewrite create or truncate a file.
+- A shell string like `$'it\'s'` elsewhere in a script no longer makes the whole script fail with
+  "quoting couldn't be parsed"; only a grep with unparseable quoting is blocked.
+- A quoted environment prefix (`FOO='a b' grep …`) keeps its quotes in the rewritten command
+  instead of becoming `FOO=a b tgrep …`.
+- A `cd` that feeds a pipe or runs in the background no longer changes the directory used to find
+  the index for later commands.
+
+- A grep that reads a here-string (`grep foo <<< "x"`) runs unchanged instead of being mistranslated.
+- A backslash-newline line continuation in a grep command is no longer passed to `tgrep` as a
+  literal argument.
+
 ## [0.3.3] - 2026-10-01
 
 ### Fixed

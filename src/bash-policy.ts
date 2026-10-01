@@ -271,6 +271,15 @@ interface Translation {
   engine: GrepEngine;
 }
 
+/** End index (after the closing quote) of a `$'…'` string starting at `start`, or -1 if unterminated. */
+function consumeAnsiCQuote(text: string, start: number): number {
+  for (let i = start + 2; i < text.length; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === "'") return i + 1;
+  }
+  return -1;
+}
+
 function tokenizeDetailed(command: string): Token[] | null {
   const tokens: Token[] = [];
   let current = "";
@@ -318,7 +327,15 @@ function tokenizeDetailed(command: string): Token[] | null {
       }
       continue;
     }
-    if (c === "'") {
+    if (c === "$" && command[i + 1] === "'") {
+      const end = consumeAnsiCQuote(command, i);
+      if (end === -1) return null;
+      current += command.slice(i + 2, end - 1);
+      has = true;
+      quoted = true;
+      expansion = true;
+      i = end - 1;
+    } else if (c === "'") {
       inSingle = true;
       has = true;
       quoted = true;
@@ -329,11 +346,16 @@ function tokenizeDetailed(command: string): Token[] | null {
     } else if (c === "\\") {
       const next = command[++i];
       if (next === undefined) return null;
-      current += next;
-      has = true;
-      quoted = true;
+      // A backslash-newline is a line continuation and contributes nothing.
+      if (next !== "\n") {
+        current += next;
+        has = true;
+        quoted = true;
+      }
     } else if (/\s/.test(c)) {
       flush();
+    } else if (c === "#" && !has) {
+      break;
     } else {
       if ((c === "$" && EXPANSION_NEXT.test(command[i + 1] ?? "")) || c === "`") expansion = true;
       current += c;
@@ -345,12 +367,17 @@ function tokenizeDetailed(command: string): Token[] | null {
   return tokens;
 }
 
-/** Command split on shell separators; separators[i] joins parts[i] and parts[i + 1]. */
+/** Command split on shell separators. */
 interface ScannedCommand {
   kind: "parts";
   parts: string[];
+  /** separators[i] joins parts[i] and parts[i + 1]; a newline separator also carries any heredoc bodies it ends. */
   separators: string[];
-  /** Heredoc bodies (terminator included); parts carry an opaque marker in their place. */
+  /** stdinFed[i]: parts[i] reads stdin from a heredoc or here-string, so tgrep can't stand in for it. */
+  stdinFed: boolean[];
+  /** blocks[i]: why parts[i] can't be translated if it turns out to be a grep (unsupported redirect or backgrounding). */
+  blocks: (string | undefined)[];
+  /** Heredoc bodies (terminator included); separators carry an opaque marker in their place. */
   heredocs: string[];
 }
 
@@ -479,12 +506,25 @@ function consumeBacktickSubstitution(command: string, backtick: number): { end: 
 function scanPipeline(command: string): ScanResult {
   const parts: string[] = [];
   const separators: string[] = [];
+  const stdinFed: boolean[] = [];
+  const blocks: (string | undefined)[] = [];
   const heredocs: string[] = [];
   const pending: PendingHeredoc[] = [];
   let current = "";
+  let currentStdinFed = false;
+  let currentBlock: string | undefined;
   let inSingle = false;
   let inDouble = false;
   let i = 0;
+  const endPart = (separator: string) => {
+    parts.push(current);
+    stdinFed.push(currentStdinFed);
+    blocks.push(currentBlock);
+    separators.push(separator);
+    current = "";
+    currentStdinFed = false;
+    currentBlock = undefined;
+  };
   while (i < command.length) {
     const c = command[i]!;
     if (inSingle) {
@@ -506,6 +546,13 @@ function scanPipeline(command: string): ScanResult {
       i++;
       continue;
     }
+    if (c === "$" && command[i + 1] === "'") {
+      const end = consumeAnsiCQuote(command, i);
+      if (end === -1) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+      current += command.slice(i, end);
+      i = end;
+      continue;
+    }
     if (c === "'") {
       inSingle = true;
       current += c;
@@ -525,6 +572,13 @@ function scanPipeline(command: string): ScanResult {
       i += 2;
       continue;
     }
+    if (c === "#" && (current === "" || /\s$/.test(current))) {
+      const eol = command.indexOf("\n", i);
+      const end = eol === -1 ? command.length : eol;
+      current += command.slice(i, end);
+      i = end;
+      continue;
+    }
     if (c === "`") {
       const sub = consumeBacktickSubstitution(command, i);
       if (!sub) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
@@ -533,35 +587,47 @@ function scanPipeline(command: string): ScanResult {
       i = sub.end;
       continue;
     }
-    if (c === ";") {
-      parts.push(current);
-      separators.push(";");
-      current = "";
+    if (c === "\n") {
       i++;
-      continue;
-    }
-    if (c === "&") {
-      // A single & is the background operator; only && separates commands.
-      if (command[i + 1] !== "&") return { kind: "block", reason: BACKGROUND_BLOCK_REASON };
-      parts.push(current);
-      separators.push("&&");
-      current = "";
-      i += 2;
-      continue;
-    }
-    if (c === "\n" && pending.length > 0) {
-      current += c;
-      i++;
+      let separator = "\n";
       for (const heredoc of pending.splice(0)) {
         const end = consumeHeredocBody(command, i, heredoc);
-        current += `\u0001H${heredocs.length}\u0001`;
+        separator += `\u0001H${heredocs.length}\u0001`;
         heredocs.push(command.slice(i, end));
         i = end;
       }
+      endPart(separator);
+      continue;
+    }
+    if (c === ";") {
+      const separator = command[i + 1] === ";" ? ";;" : ";";
+      endPart(separator);
+      i += separator.length;
+      continue;
+    }
+    if (c === "&") {
+      if (command[i + 1] === "&") {
+        endPart("&&");
+        i += 2;
+        continue;
+      }
+      // A single & backgrounds the whole && / || / | list before it, none of which can be translated.
+      currentBlock ??= BACKGROUND_BLOCK_REASON;
+      for (let k = parts.length - 1; k >= 0 && !/^(;;?|\n)/.test(separators[k]!); k--) {
+        blocks[k] ??= BACKGROUND_BLOCK_REASON;
+      }
+      endPart("&");
+      i++;
       continue;
     }
     if (c === "<") {
-      if (command[i + 1] !== "<") return { kind: "block", reason: STDIN_REDIRECT_BLOCK_REASON };
+      if (command[i + 1] !== "<") {
+        currentBlock ??= STDIN_REDIRECT_BLOCK_REASON;
+        current += c;
+        i++;
+        continue;
+      }
+      currentStdinFed = true;
       if (command[i + 2] === "<") {
         // Here-string: the word that follows is scanned as an ordinary operand.
         current += "<<<";
@@ -602,24 +668,18 @@ function scanPipeline(command: string): ScanResult {
       continue;
     }
     if (c === "|") {
-      if (command[i + 1] === "|") {
-        parts.push(current);
-        separators.push("||");
-        current = "";
-        i += 2;
-        continue;
-      }
-      parts.push(current);
-      separators.push("|");
-      current = "";
-      i++;
+      const separator = command[i + 1] === "|" ? "||" : "|";
+      endPart(separator);
+      i += separator.length;
       continue;
     }
     current += c;
     i++;
   }
   parts.push(current);
-  return { kind: "parts", parts, separators, heredocs };
+  stdinFed.push(currentStdinFed);
+  blocks.push(currentBlock);
+  return { kind: "parts", parts, separators, stdinFed, blocks, heredocs };
 }
 
 function splitRedirect(segment: string): { cmd: string; suffix: string } {
@@ -636,9 +696,16 @@ function splitRedirect(segment: string): { cmd: string; suffix: string } {
       else if (c === "\\") i++;
       continue;
     }
-    if (c === "'") inSingle = true;
+    if (c === "$" && segment[i + 1] === "'") {
+      const end = consumeAnsiCQuote(segment, i);
+      if (end === -1) break;
+      i = end - 1;
+    } else if (c === "'") inSingle = true;
     else if (c === '"') inDouble = true;
-    else if (c === ">") {
+    else if (c === "#" && (i === 0 || /\s/.test(segment[i - 1]!))) {
+      // A comment runs to the end of the segment; a > inside it is not a redirect.
+      return { cmd: segment.slice(0, i), suffix: segment.slice(i) };
+    } else if (c === ">") {
       let start = i;
       if (i > 0 && /[0-9]/.test(segment[i - 1]!)) {
         let j = i - 1;
@@ -651,6 +718,13 @@ function splitRedirect(segment: string): { cmd: string; suffix: string } {
   return { cmd: segment, suffix: "" };
 }
 
+/** A quoted assignment prefix (`FOO='a b'`) must stay quoted when re-emitted. */
+function renderPrefix(t: Token): string {
+  const eq = t.text.indexOf("=");
+  if (!t.quoted || t.expansion || eq === -1 || !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text)) return t.text;
+  return t.text.slice(0, eq + 1) + emitToken(t.text.slice(eq + 1), false);
+}
+
 function stripPrefixes(tokens: Token[]): { prefixes: string[]; rest: Token[]; ok: boolean } {
   const prefixes: string[] = [];
   const rest = [...tokens];
@@ -658,7 +732,7 @@ function stripPrefixes(tokens: Token[]): { prefixes: string[]; rest: Token[]; ok
     const head = rest[0];
     if (head === undefined) return { prefixes, rest, ok: false };
     if (PREFIX_TOKENS.has(head.text) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(head.text)) {
-      prefixes.push(head.text);
+      prefixes.push(renderPrefix(head));
       rest.shift();
       continue;
     }
@@ -862,18 +936,20 @@ type SegmentResult = { kind: "verbatim" } | { kind: "rewrite"; text: string } | 
 function policySegment(
   segment: string,
   mode: BashPolicyMode,
-  indexPath?: string,
+  indexPath: string | undefined,
+  stdinFed: boolean,
 ): SegmentResult {
-  const hasHeredoc = segment.includes("\u0001H");
-  const { cmd, suffix } = splitRedirect(segment.replace(HEREDOC_MARKER, ""));
+  const { cmd, suffix } = splitRedirect(segment);
   const tokens = tokenizeDetailed(cmd);
-  if (!tokens) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+  if (!tokens) {
+    return FAMILY_PATTERN.test(segment) ? { kind: "block", reason: UNPARSEABLE_QUOTING_REASON } : { kind: "verbatim" };
+  }
   const { prefixes, rest, ok } = stripPrefixes(tokens);
   const bin = rest[0]?.text;
   if (!ok || !bin || !isGrepFamilyBinary(bin)) return { kind: "verbatim" };
   if (mode === "block") return { kind: "block", reason: POLICY_BLOCK_REASON };
-  // A heredoc feeds this command's stdin, which tgrep doesn't read.
-  if (hasHeredoc) return { kind: "verbatim" };
+  // tgrep doesn't read stdin.
+  if (stdinFed) return { kind: "verbatim" };
   // A shell expansion in an operand greps an explicit, dynamic list we can't resolve statically.
   if (rest.some((t) => t.expansion)) return { kind: "verbatim" };
   if (isScanOnlyBinary(bin)) return { kind: "verbatim" };
@@ -902,75 +978,32 @@ function policySegment(
   return { kind: "rewrite", text: suffix ? `${cmdText} ${suffix.trim()}` : cmdText };
 }
 
-function extractCdPrefix(command: string): { prefix: string; rest: string; target: string | null } | "unsafe" | null {
-  let pos = 0;
-  let prefix = "";
-  let segments = 0;
-  let lastTarget: string | null = null;
-  for (;;) {
-    while (pos < command.length && /\s/.test(command[pos]!)) pos++;
-    if (!command.startsWith("cd", pos)) {
-      return segments > 0 ? { prefix, rest: command.slice(pos), target: lastTarget } : null;
-    }
-    const after = command[pos + 2];
-    if (after === undefined || !/\s/.test(after)) {
-      return segments > 0 ? { prefix, rest: command.slice(pos), target: lastTarget } : null;
-    }
-    let cursor = pos + 2;
-    while (cursor < command.length && /\s/.test(command[cursor]!)) cursor++;
-    const targetStart = cursor;
-    let inSingle = false;
-    let inDouble = false;
-    while (cursor < command.length) {
-      const c = command[cursor]!;
-      if (inSingle) {
-        if (c === "'") inSingle = false;
-        cursor++;
-        continue;
-      }
-      if (inDouble) {
-        if (c === "$" || c === "`") return "unsafe";
-        if (c === "\\") {
-          cursor += 2;
-          continue;
-        }
-        if (c === '"') inDouble = false;
-        cursor++;
-        continue;
-      }
-      if (c === "'") {
-        inSingle = true;
-        cursor++;
-        continue;
-      }
-      if (c === '"') {
-        inDouble = true;
-        cursor++;
-        continue;
-      }
-      if (/\s/.test(c)) break;
-      if (c === ";" || c === "&") break;
-      if ("$`|<>()".includes(c)) return "unsafe";
-      cursor++;
-    }
-    if (cursor === targetStart || inSingle || inDouble) return "unsafe";
-    if (command[targetStart] === "-") return "unsafe";
-    const target = command.slice(targetStart, cursor);
-    segments++;
-    lastTarget = target;
-    let j = cursor;
-    while (j < command.length && /\s/.test(command[j]!)) j++;
-    if (command.startsWith("&&", j)) {
-      pos = j + 2;
-    } else if (command[j] === ";") {
-      pos = j + 1;
-    } else {
-      return { prefix: command.slice(0, cursor), rest: command.slice(cursor), target: lastTarget };
-    }
-    while (pos < command.length && /\s/.test(command[pos]!)) pos++;
-    prefix = command.slice(0, pos);
-    if (segments >= 3) return { prefix, rest: command.slice(pos), target: lastTarget };
-  }
+/** Working directory as the command runs; null once a `cd` target can't be resolved statically. */
+type Cwd = string | null;
+
+/** The directory after `part` if it is a `cd`, undefined if it is any other command. */
+function cwdAfterCd(part: string, cwd: Cwd): Cwd | undefined {
+  const tokens = tokenizeDetailed(splitRedirect(part).cmd);
+  if (!tokens || tokens[0]?.text !== "cd") return undefined;
+  const target = tokens[1];
+  if (tokens.length !== 2 || !target || target.expansion || /^[-~]/.test(target.text)) return null;
+  if (path.isAbsolute(target.text)) return target.text;
+  return cwd === null ? null : path.resolve(cwd, target.text);
+}
+
+function isGrepFamilyCommand(part: string): boolean {
+  const tokens = tokenizeDetailed(splitRedirect(part).cmd);
+  if (!tokens) return FAMILY_PATTERN.test(part);
+  const { rest, ok } = stripPrefixes(tokens);
+  return ok && rest[0] !== undefined && isGrepFamilyBinary(rest[0].text);
+}
+
+function leadingSpace(text: string): string {
+  return text.slice(0, text.length - text.trimStart().length);
+}
+
+function trailingSpace(text: string): string {
+  return text.slice(text.trimEnd().length);
 }
 
 export async function applyBashPolicy(
@@ -982,39 +1015,58 @@ export async function applyBashPolicy(
   if (!FAMILY_PATTERN.test(command)) return { action: "allow" };
   if (mode === "warn") return { action: "warn", command };
 
-  const cd = extractCdPrefix(command);
-  if (cd === "unsafe") {
-    // The cd target can't be resolved statically, so the index dir is unknowable; run as-is.
-    if (mode === "translate") return { action: "allow" };
-    return { action: "block", reason: POLICY_BLOCK_REASON };
-  }
-  const cdPrefix = cd?.prefix ?? "";
-  const effective = cd ? cd.rest : command;
-
-  // The index directory is resolved for the directory the command actually runs in: the
-  // leading `cd` target when present, otherwise the policy base cwd.
-  let indexPath = context?.indexPath;
-  if (!indexPath && context?.resolveIndex) {
-    const base = cd?.target ? path.resolve(context.cwd ?? process.cwd(), cd.target) : (context.cwd ?? process.cwd());
-    indexPath = await context.resolveIndex(base);
-  }
-
-  const scanned = scanPipeline(effective);
+  const scanned = scanPipeline(command);
   if (scanned.kind === "block") return { action: "block", reason: scanned.reason };
 
+  const indexCache = new Map<string, Promise<string | undefined>>();
+  const indexFor = (cwd: string): Promise<string | undefined> => {
+    if (context?.indexPath) return Promise.resolve(context.indexPath);
+    if (!context?.resolveIndex) return Promise.resolve(undefined);
+    let index = indexCache.get(cwd);
+    if (!index) {
+      index = context.resolveIndex(cwd);
+      indexCache.set(cwd, index);
+    }
+    return index;
+  };
+
+  const { parts, separators } = scanned;
+  // The index directory belongs to the directory each segment runs in, so `cd` is followed in order.
+  let cwd: Cwd = context?.cwd ?? process.cwd();
   const rendered: string[] = [];
   let changed = false;
-  for (const part of scanned.parts) {
-    const result = policySegment(part, mode, indexPath);
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!;
+    // A cd in a pipeline or in the background runs in a subshell and doesn't move this shell.
+    const inSubshell = separators[i - 1] === "|" || separators[i] === "|" || separators[i] === "&";
+    const afterCd: Cwd | undefined = inSubshell ? undefined : cwdAfterCd(part, cwd);
+    if (afterCd !== undefined) {
+      cwd = afterCd;
+      rendered.push(part);
+      continue;
+    }
+    let result: SegmentResult;
+    const deferredBlock = scanned.blocks[i];
+    if (deferredBlock !== undefined && isGrepFamilyCommand(part)) {
+      result = { kind: "block", reason: deferredBlock };
+    } else if (cwd === null && mode !== "block") {
+      // The index can't be located without knowing the directory, so run as-is.
+      result = { kind: "verbatim" };
+    } else {
+      const indexPath = cwd !== null && isGrepFamilyCommand(part) ? await indexFor(cwd) : undefined;
+      result = policySegment(part, mode, indexPath, scanned.stdinFed[i]!);
+    }
     switch (result.kind) {
-      case "block":
-        return { action: "block", reason: result.reason };
+      case "block": {
+        const where = command.includes("\n") ? ` (in: ${part.trim().slice(0, 120)})` : "";
+        return { action: "block", reason: `${result.reason}${where}` };
+      }
       case "rewrite":
         changed = true;
-        rendered.push(result.text);
+        rendered.push(leadingSpace(part) + result.text + trailingSpace(part));
         break;
       case "verbatim":
-        rendered.push(part.trim());
+        rendered.push(part);
         break;
       default: {
         const exhaustive: never = result;
@@ -1023,10 +1075,9 @@ export async function applyBashPolicy(
     }
   }
   if (!changed) return { action: "allow" };
-  let text = "";
-  for (let i = 0; i < rendered.length; i++) {
-    text += rendered[i]!;
-    if (i < scanned.separators.length) text += ` ${scanned.separators[i]!} `;
-  }
-  return { action: "rewrite", command: restoreHeredocs((cdPrefix + text).trimEnd(), scanned.heredocs) };
+
+  // Untouched text, spacing and separators are kept as written; only rewritten commands change.
+  let text = rendered[0]!;
+  for (let i = 1; i < parts.length; i++) text += separators[i - 1]! + rendered[i]!;
+  return { action: "rewrite", command: restoreHeredocs(text.trim(), scanned.heredocs) };
 }
