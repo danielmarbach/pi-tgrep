@@ -271,6 +271,15 @@ interface Translation {
   engine: GrepEngine;
 }
 
+/** End index (after the closing quote) of a `$'…'` string starting at `start`, or -1 if unterminated. */
+function consumeAnsiCQuote(text: string, start: number): number {
+  for (let i = start + 2; i < text.length; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === "'") return i + 1;
+  }
+  return -1;
+}
+
 function tokenizeDetailed(command: string): Token[] | null {
   const tokens: Token[] = [];
   let current = "";
@@ -318,7 +327,15 @@ function tokenizeDetailed(command: string): Token[] | null {
       }
       continue;
     }
-    if (c === "'") {
+    if (c === "$" && command[i + 1] === "'") {
+      const end = consumeAnsiCQuote(command, i);
+      if (end === -1) return null;
+      current += command.slice(i + 2, end - 1);
+      has = true;
+      quoted = true;
+      expansion = true;
+      i = end - 1;
+    } else if (c === "'") {
       inSingle = true;
       has = true;
       quoted = true;
@@ -529,6 +546,13 @@ function scanPipeline(command: string): ScanResult {
       i++;
       continue;
     }
+    if (c === "$" && command[i + 1] === "'") {
+      const end = consumeAnsiCQuote(command, i);
+      if (end === -1) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+      current += command.slice(i, end);
+      i = end;
+      continue;
+    }
     if (c === "'") {
       inSingle = true;
       current += c;
@@ -672,9 +696,16 @@ function splitRedirect(segment: string): { cmd: string; suffix: string } {
       else if (c === "\\") i++;
       continue;
     }
-    if (c === "'") inSingle = true;
+    if (c === "$" && segment[i + 1] === "'") {
+      const end = consumeAnsiCQuote(segment, i);
+      if (end === -1) break;
+      i = end - 1;
+    } else if (c === "'") inSingle = true;
     else if (c === '"') inDouble = true;
-    else if (c === ">") {
+    else if (c === "#" && (i === 0 || /\s/.test(segment[i - 1]!))) {
+      // A comment runs to the end of the segment; a > inside it is not a redirect.
+      return { cmd: segment.slice(0, i), suffix: segment.slice(i) };
+    } else if (c === ">") {
       let start = i;
       if (i > 0 && /[0-9]/.test(segment[i - 1]!)) {
         let j = i - 1;
@@ -687,6 +718,13 @@ function splitRedirect(segment: string): { cmd: string; suffix: string } {
   return { cmd: segment, suffix: "" };
 }
 
+/** A quoted assignment prefix (`FOO='a b'`) must stay quoted when re-emitted. */
+function renderPrefix(t: Token): string {
+  const eq = t.text.indexOf("=");
+  if (!t.quoted || t.expansion || eq === -1 || !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text)) return t.text;
+  return t.text.slice(0, eq + 1) + emitToken(t.text.slice(eq + 1), false);
+}
+
 function stripPrefixes(tokens: Token[]): { prefixes: string[]; rest: Token[]; ok: boolean } {
   const prefixes: string[] = [];
   const rest = [...tokens];
@@ -694,7 +732,7 @@ function stripPrefixes(tokens: Token[]): { prefixes: string[]; rest: Token[]; ok
     const head = rest[0];
     if (head === undefined) return { prefixes, rest, ok: false };
     if (PREFIX_TOKENS.has(head.text) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(head.text)) {
-      prefixes.push(head.text);
+      prefixes.push(renderPrefix(head));
       rest.shift();
       continue;
     }
@@ -903,7 +941,9 @@ function policySegment(
 ): SegmentResult {
   const { cmd, suffix } = splitRedirect(segment);
   const tokens = tokenizeDetailed(cmd);
-  if (!tokens) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+  if (!tokens) {
+    return FAMILY_PATTERN.test(segment) ? { kind: "block", reason: UNPARSEABLE_QUOTING_REASON } : { kind: "verbatim" };
+  }
   const { prefixes, rest, ok } = stripPrefixes(tokens);
   const bin = rest[0]?.text;
   if (!ok || !bin || !isGrepFamilyBinary(bin)) return { kind: "verbatim" };
@@ -951,6 +991,13 @@ function cwdAfterCd(part: string, cwd: Cwd): Cwd | undefined {
   return cwd === null ? null : path.resolve(cwd, target.text);
 }
 
+function isGrepFamilyCommand(part: string): boolean {
+  const tokens = tokenizeDetailed(splitRedirect(part).cmd);
+  if (!tokens) return FAMILY_PATTERN.test(part);
+  const { rest, ok } = stripPrefixes(tokens);
+  return ok && rest[0] !== undefined && isGrepFamilyBinary(rest[0].text);
+}
+
 function leadingSpace(text: string): string {
   return text.slice(0, text.length - text.trimStart().length);
 }
@@ -990,7 +1037,9 @@ export async function applyBashPolicy(
   let changed = false;
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!;
-    const afterCd: Cwd | undefined = separators[i - 1] === "|" ? undefined : cwdAfterCd(part, cwd);
+    // A cd in a pipeline or in the background runs in a subshell and doesn't move this shell.
+    const inSubshell = separators[i - 1] === "|" || separators[i] === "|" || separators[i] === "&";
+    const afterCd: Cwd | undefined = inSubshell ? undefined : cwdAfterCd(part, cwd);
     if (afterCd !== undefined) {
       cwd = afterCd;
       rendered.push(part);
@@ -998,13 +1047,13 @@ export async function applyBashPolicy(
     }
     let result: SegmentResult;
     const deferredBlock = scanned.blocks[i];
-    if (deferredBlock !== undefined && FAMILY_PATTERN.test(part)) {
+    if (deferredBlock !== undefined && isGrepFamilyCommand(part)) {
       result = { kind: "block", reason: deferredBlock };
     } else if (cwd === null && mode !== "block") {
       // The index can't be located without knowing the directory, so run as-is.
       result = { kind: "verbatim" };
     } else {
-      const indexPath = cwd !== null && FAMILY_PATTERN.test(part) ? await indexFor(cwd) : undefined;
+      const indexPath = cwd !== null && isGrepFamilyCommand(part) ? await indexFor(cwd) : undefined;
       result = policySegment(part, mode, indexPath, scanned.stdinFed[i]!);
     }
     switch (result.kind) {

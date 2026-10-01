@@ -183,6 +183,61 @@ async function runMultiLineTests() {
   console.log("multi-line tests ok");
 }
 
+async function runReviewRegressionTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // A > in a trailing comment stays a comment.
+  await policyCase("grep -rn foo src # TODO: 2>&1 > notes.txt", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src # TODO: 2>&1 > notes.txt",
+  }, IDX);
+  await policyCase("grep -rn foo src 2>/dev/null # x > y", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src 2>/dev/null # x > y",
+  }, IDX);
+  // $'…' with an escaped quote doesn't swallow the rest of the script.
+  await policyCase("printf $'it\\'s\\n'\nps aux | grep node", "translate", { action: "allow" }, IDX);
+  await policyCase("printf $'it\\'s\\n'\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "printf $'it\\'s\\n'\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // A $'…' operand can't be resolved statically, so that grep runs unchanged.
+  await policyCase("grep -rn $'a\\tb' src", "translate", { action: "allow" }, IDX);
+  // An unparseable segment only blocks when the swallowed text contains a grep.
+  await policyCase("grep -rn foo src\necho 'oops", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n foo src\necho 'oops",
+  }, IDX);
+  const swallowed = await policyCase("echo 'oops\ngrep -rn foo src", "translate", { action: "block" }, IDX);
+  assert.match(swallowed.reason, /quoting couldn't be parsed/);
+  // A deferred < or & block needs an actual grep command, not the word grep in an argument.
+  await policyCase("sort < grep-results.txt\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "sort < grep-results.txt\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("npm run rg-server &\ngrep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "npm run rg-server &\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // Assignment prefixes keep their quoting; an unquoted ~ still expands.
+  await policyCase("FOO='a b' grep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "FOO='a b' tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("FOO=~/x grep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "FOO=~/x tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // A cd that feeds a pipe or runs in the background is a subshell and doesn't move this shell.
+  const calls = [];
+  const resolver = { cwd: "/base", resolveIndex: async (cwd) => (calls.push(cwd), `${cwd}/.tgrep`) };
+  await policyCase("cd /x | cat\ncd /y &\ngrep -rn a src", "translate", {
+    action: "rewrite",
+    command: "cd /x | cat\ncd /y &\ntgrep search --index-path '/base/.tgrep' -n a src",
+  }, resolver);
+  assert.deepEqual(calls, ["/base"]);
+  console.log("review regression tests ok");
+}
+
 async function runCdTrackingTests() {
   const calls = [];
   const resolver = {
@@ -222,4 +277,5 @@ await runOrSeparatorTests();
 await runHeredocTests();
 await runMultiLineTests();
 await runCdTrackingTests();
+await runReviewRegressionTests();
 console.log("ALL BLOCK TESTS PASSED");
