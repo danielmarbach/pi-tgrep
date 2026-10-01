@@ -10,6 +10,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-01
+
 ### Changed
 
 - A `grep` after a shell keyword on the same line (`do grep …`, `then grep …`, `else grep …`,
