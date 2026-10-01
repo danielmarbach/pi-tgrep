@@ -990,9 +990,14 @@ type Cwd = string | null;
 /** The directory after `part` if it is a `cd`, undefined if it is any other command. */
 function cwdAfterCd(part: string, cwd: Cwd): Cwd | undefined {
   const tokens = tokenizeDetailed(splitRedirect(part).cmd);
-  if (!tokens || tokens[0]?.text !== "cd") return undefined;
-  const target = tokens[1];
-  if (tokens.length !== 2 || !target || target.expansion || /^[-~]/.test(target.text)) return null;
+  if (!tokens) return undefined;
+  let cd = 0;
+  while (tokens[cd] && !tokens[cd]!.quoted && KEYWORD_PREFIXES.has(tokens[cd]!.text)) cd++;
+  if (tokens[cd]?.text !== "cd") return undefined;
+  // Under if/then/do the cd runs conditionally or repeatedly, so where the shell ends up is unknown.
+  if (cd > 0 && tokens[cd - 1]!.text !== "{") return null;
+  const target = tokens[cd + 1];
+  if (tokens.length !== cd + 2 || !target || target.expansion || /^[-~]/.test(target.text)) return null;
   if (path.isAbsolute(target.text)) return target.text;
   return cwd === null ? null : path.resolve(cwd, target.text);
 }

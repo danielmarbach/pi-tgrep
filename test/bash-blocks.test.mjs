@@ -273,6 +273,23 @@ async function runKeywordPrefixTests() {
   await policyCase('for f in a; do grep -n foo "$f"; done', "translate", { action: "allow" }, IDX);
   // Block mode now sees a grep in a condition too.
   await policyCase("if grep -q foo src/a.ts; then echo y; fi", "block", { action: "block" });
+  // A cd under a keyword is conditional or repeated, so the directory is unknown afterwards.
+  const resolver = { cwd: "/base", resolveIndex: async (cwd) => `${cwd}/.tgrep` };
+  await policyCase('for d in a b; do cd "$d"; make; cd ..; done\ngrep -rn foo src', "translate", { action: "allow" }, resolver);
+  await policyCase("if true; then cd /x; fi\ngrep -rn foo src", "translate", { action: "allow" }, resolver);
+  // A { } group runs in this shell, so its cd is real.
+  await policyCase("{ cd /x; grep -rn foo src; }", "translate", {
+    action: "rewrite",
+    command: "{ cd /x; tgrep search --index-path '/x/.tgrep' -n foo src; }",
+  }, resolver);
+  // A condition with a flag that has no tgrep translation is blocked like any other grep.
+  const unsupported = await policyCase("if grep -qz x f; then echo y; fi", "translate", { action: "block" }, IDX);
+  assert.match(unsupported.reason, /-z is not recognized/);
+  // A loop that is backgrounded is translated, not blocked.
+  await policyCase("for f in a; do grep -rn x src; done &", "translate", {
+    action: "rewrite",
+    command: "for f in a; do tgrep search --index-path '/repo/.tgrep' -n x src; done &",
+  }, IDX);
   console.log("keyword prefix tests ok");
 }
 

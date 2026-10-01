@@ -77,7 +77,8 @@ path into the fast one and closes the side doors.
    - grep whose operands contain a shell expansion (`"$f"`, `$FILES`, `$(find …)`, backticks)
      greps a dynamic list the index can't help with, so it runs unchanged, as does a command
      follows a `cd` with a dynamic target (until the next absolute `cd`); a grep *inside*
-     `$(…)` or backticks, a grep that is backgrounded with `&`, and a grep with a stdin
+     `$(…)` or backticks, a grep that is itself backgrounded with `&` (`grep … &`, `a && grep … &`;
+     one inside a backgrounded loop or group is translated), and a grep with a stdin
      redirect (`<`) are blocked, while the same constructs on other commands are left alone;
    - every block reason names what triggered it (the construct, or the unsupported flag) and
      keeps the phrase "bypasses the tgrep index" so `npm run analyze` can count blocks;
