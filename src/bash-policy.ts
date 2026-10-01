@@ -20,6 +20,8 @@ export const FAMILY_PATTERN = /\b(grep|egrep|fgrep|rg|ag|ack|pt)\b/;
 const FAMILY_TOKEN = /^(grep|egrep|fgrep|rg|ag|ack|pt)$/;
 const SCAN_ONLY_FAMILY = /^(ag|ack|pt)$/;
 const PREFIX_TOKENS = new Set(["sudo", "env", "command", "exec", "nice", "nohup", "time"]);
+/** Keywords that can precede a command on the same line, as in `then grep …` or `if grep -q …`. */
+const KEYWORD_PREFIXES = new Set(["if", "elif", "while", "until", "then", "else", "do", "!", "{"]);
 
 /** Binaries recognized by the grep family policy; scoped narrowly to keep matching exhaustive. */
 type GrepFamilyBinary = "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "pt";
@@ -731,7 +733,11 @@ function stripPrefixes(tokens: Token[]): { prefixes: string[]; rest: Token[]; ok
   for (;;) {
     const head = rest[0];
     if (head === undefined) return { prefixes, rest, ok: false };
-    if (PREFIX_TOKENS.has(head.text) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(head.text)) {
+    if (
+      PREFIX_TOKENS.has(head.text) ||
+      (!head.quoted && KEYWORD_PREFIXES.has(head.text)) ||
+      /^[A-Za-z_][A-Za-z0-9_]*=/.test(head.text)
+    ) {
       prefixes.push(renderPrefix(head));
       rest.shift();
       continue;
