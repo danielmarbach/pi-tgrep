@@ -245,6 +245,26 @@ async function runWatchedToolsTests() {
   input = { language: "shell", code: heredocThenGrep };
   r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
   assert.equal(r.action, "block");
+  assert.match(r.reason ?? "", /heredoc/);
+  assert.doesNotMatch(r.reason ?? "", /PI_TGREP_BASH_POLICY=block/);
+
+  // Piping into grep runs unchanged, heredoc or not.
+  const heredocThenPipe = "cat > a.csproj <<'EOF'\n<Project Sdk=\"x\">\nEOF\ndotnet build 2>&1 | grep -E \"warning\" | sort -u";
+  input = { language: "shell", code: heredocThenPipe };
+  r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
+  assert.equal(r.action, "allow");
+  assert.equal(input.code, heredocThenPipe);
+
+  // The user's PI_TGREP_BASH_POLICY=block still blocks piped grep in heredoc blocks.
+  input = { language: "shell", code: heredocThenPipe };
+  r = await applyToolCallPolicy("ctx_execute", input, "block", watched);
+  assert.equal(r.action, "block");
+
+  // A here-string is not a heredoc: the lines after it are still rewritten.
+  input = { language: "shell", code: "cat <<< \"x\"\ngrep -rl foo src" };
+  r = await applyToolCallPolicy("ctx_execute", input, "translate", watched, IDX);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "cat <<< \"x\"\ntgrep search --index-path '/repo/.tgrep' -l foo src");
 
   process.env.PI_TGREP_WATCH_TOOLS = "custom_tool";
   const cfg = loadConfig();

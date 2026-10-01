@@ -16,7 +16,8 @@ export function watchedKey(toolName: string, watchedTools: string[]): string | n
   return null;
 }
 
-const HEREDOC_MARKER = /<<-?\s*(\S+)/;
+const HEREDOC_MARKER = /(?<!<)<<(?!<)-?\s*(\S+)/;
+const HEREDOC_BLOCK_REASON = `${BLOCK_REASON} Grep lines aren't rewritten in a shell block that contains a heredoc; run the grep as its own command.`;
 const PLAIN_CD = /^cd\s+(\S+)\s*$/;
 
 // A plain `cd <target>` line changes the directory for the lines that follow in a shell block.
@@ -57,13 +58,11 @@ async function applyToShellCode(
       }
       continue;
     }
-    const result = await applyBashPolicy(line, hasHeredoc ? "block" : mode, { ...context, cwd: dir });
-    if (result.action === "block") {
-      const hint = hasHeredoc ? " (heredoc bodies are never rewritten)" : "";
-      return {
-        action: "block",
-        reason: `${result.reason} (line ${i + 1}: ${trimmed.slice(0, 120)})${hint}`,
-      };
+    const result = await applyBashPolicy(line, mode, { ...context, cwd: dir });
+    const rewriteBlockedByHeredoc = hasHeredoc && result.action === "rewrite";
+    if (result.action === "block" || rewriteBlockedByHeredoc) {
+      const reason = result.action === "block" ? result.reason : HEREDOC_BLOCK_REASON;
+      return { action: "block", reason: `${reason} (line ${i + 1}: ${trimmed.slice(0, 120)})` };
     }
     if (result.action === "rewrite") {
       const indent = line.slice(0, line.length - trimmed.length);
