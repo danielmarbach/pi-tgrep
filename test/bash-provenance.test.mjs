@@ -118,10 +118,10 @@ test("blocked bash commands leave no stamp", async () => {
 test("compound command stamps the rewritten full command", async () => {
   const { event, res } = await toolCall("p6", "bash", { command: "grep foo .; rm x" });
   assert.equal(res, undefined, "compound with a translatable search part must not block");
-  assert.equal(event.input.command, `tgrep search --index-path '${IDX_PATH}' foo . ; rm x`);
+  assert.equal(event.input.command, `tgrep search --index-path '${IDX_PATH}' foo .; rm x`);
   const patch = await toolResult("p6", "bash", undefined);
   assert.deepEqual(patch, {
-    details: { engine: "tgrep", command: `tgrep search --index-path '${IDX_PATH}' foo . ; rm x`, original: "grep foo .; rm x" },
+    details: { engine: "tgrep", command: `tgrep search --index-path '${IDX_PATH}' foo .; rm x`, original: "grep foo .; rm x" },
   });
   console.log("compound stamp ok");
 });

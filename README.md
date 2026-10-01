@@ -45,8 +45,8 @@ path into the fast one and closes the side doors.
      attribute shell tgrep usage directly; when a translated command fails or prints nothing,
      a `[pi-tgrep] ran … in place of …` line is appended to the output the model sees, so an
      empty result is never mistaken for a block;
-   - the index directory is resolved for the directory the command actually runs in — the
-     leading `cd` target when there is one, otherwise the session cwd — so
+   - the index directory is resolved for the directory each grep actually runs in — the
+     session cwd, followed through any `cd` in the command or script — so
      `cd /other/repo && grep …` searches that repo's index, not the session repo's; when a
      valid index directory exists, translated commands whose positional paths are all
      relative get `--index-path '<index dir>'` injected (any absolute positional, or an
@@ -55,9 +55,10 @@ path into the fast one and closes the side doors.
      rebuild an index beside the searched path or hang, is never emitted; `-e`/`--regexp`/
      `-f`/`--file` pattern arguments are tracked so a pattern never masquerades as a path;
    - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim: no tree scan, no block;
-   - `ctx_execute`/`ctx_execute_file` shell code is checked line by line; heredoc bodies are
-     never rewritten, and inside heredoc-containing blocks a family command line that would
-     be translated blocks instead (lines that run unchanged, like `… | grep x`, still pass);
+   - `ctx_execute`/`ctx_execute_file` shell code is scanned exactly like a `bash` command:
+     newlines separate commands, `#` comments are ignored, and heredoc bodies are left
+     untouched while a grep on another line is still translated; a grep that reads a heredoc
+     or here-string (`<<`, `<<<`) runs unchanged since `tgrep search` doesn't read stdin;
    - non-shell `ctx_execute`/`ctx_execute_file` code (e.g. JavaScript) is scanned for
      `child_process` exec/spawn calls (`exec`, `execSync`, `execFile`, `execFileSync`,
      `spawn`, `spawnSync`): an embedded shell grep inside a backtick template or
@@ -73,8 +74,9 @@ path into the fast one and closes the side doors.
    - `;`, `&&` and `||` split the command and each part is judged on its own;
    - grep whose operands contain a shell expansion (`"$f"`, `$FILES`, `$(find …)`, backticks)
      greps a dynamic list the index can't help with, so it runs unchanged, as does a command
-     whose leading `cd` target is dynamic; a grep *inside* `$(…)` or backticks, background
-     `&`, and stdin redirects (`<`) are blocked;
+     follows a `cd` with a dynamic target (until the next absolute `cd`); a grep *inside*
+     `$(…)` or backticks, a grep that is backgrounded with `&`, and a grep with a stdin
+     redirect (`<`) are blocked, while the same constructs on other commands are left alone;
    - every block reason names what triggered it (the construct, or the unsupported flag) and
      keeps the phrase "bypasses the tgrep index" so `npm run analyze` can count blocks;
      BRE-only patterns (`\(`, `\1`, …) and `ag`/`ack`/`pt` (flag semantics diverge from

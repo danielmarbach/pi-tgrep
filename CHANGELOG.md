@@ -10,6 +10,25 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+### Changed
+
+- A `grep` on its own line in a multi-line `bash` command or `ctx_execute` / `ctx_execute_file`
+  shell script is now translated like any other, including after a heredoc, instead of running
+  unchanged (or, after a heredoc in a script, being blocked). `# comments` are ignored.
+- Each `grep` in a script uses the index of the directory it runs in, following `cd` lines. After
+  a `cd` whose target can't be resolved (`cd "$DIR"`, `cd ~/x`), later greps run unchanged until
+  an absolute `cd`.
+- A rewritten command keeps your original spacing around `;`, `&&`, `||` and `|` (for example
+  `a; grep …` becomes `a; tgrep search …`, not `a ; tgrep search …`).
+- A stdin redirect (`<`) or `&` backgrounding now blocks only the grep it applies to, not every
+  other command in the same script.
+
+### Fixed
+
+- A grep that reads a here-string (`grep foo <<< "x"`) runs unchanged instead of being mistranslated.
+- A backslash-newline line continuation in a grep command is no longer passed to `tgrep` as a
+  literal argument.
+
 ## [0.3.3] - 2026-10-01
 
 ### Fixed

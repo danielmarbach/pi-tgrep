@@ -73,7 +73,7 @@ async function runPolicyTests() {
   }, IDX);
   await policyCase("rg foo . > out.txt", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' foo . > out.txt" }, IDX);
   // compounds split on ; and &&: the search part translates, other parts run verbatim
-  await policyCase("grep foo .; rm x", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' foo . ; rm x" }, IDX);
+  await policyCase("grep foo .; rm x", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' foo .; rm x" }, IDX);
   await policyCase("echo hi && grep foo .", "translate", { action: "rewrite", command: "echo hi && tgrep search --index-path '/repo/.tgrep' foo ." }, IDX);
   // an untranslatable search part still blocks the whole compound
   await policyCase("grep -d skip foo .; rm x", "translate", { action: "block" });
@@ -241,12 +241,11 @@ async function runWatchedToolsTests() {
   assert.equal(r.action, "allow");
   assert.equal(input.code, heredoc);
 
-  const heredocThenGrep = "cat > f <<EOF\nhi\nEOF\ngrep -rl foo src";
-  input = { language: "shell", code: heredocThenGrep };
-  r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
-  assert.equal(r.action, "block");
-  assert.match(r.reason ?? "", /heredoc/);
-  assert.doesNotMatch(r.reason ?? "", /PI_TGREP_BASH_POLICY=block/);
+  // A grep after a heredoc is translated; the heredoc body is kept byte for byte.
+  input = { language: "shell", code: "cat > f <<EOF\n<hi> it's\nEOF\ngrep -rl foo src" };
+  r = await applyToolCallPolicy("ctx_execute", input, "translate", watched, IDX);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "cat > f <<EOF\n<hi> it's\nEOF\ntgrep search --index-path '/repo/.tgrep' -l foo src");
 
   // Piping into grep runs unchanged, heredoc or not.
   const heredocThenPipe = "cat > a.csproj <<'EOF'\n<Project Sdk=\"x\">\nEOF\ndotnet build 2>&1 | grep -E \"warning\" | sort -u";
@@ -255,7 +254,7 @@ async function runWatchedToolsTests() {
   assert.equal(r.action, "allow");
   assert.equal(input.code, heredocThenPipe);
 
-  // The user's PI_TGREP_BASH_POLICY=block still blocks piped grep in heredoc blocks.
+  // PI_TGREP_BASH_POLICY=block still blocks piped grep in heredoc blocks.
   input = { language: "shell", code: heredocThenPipe };
   r = await applyToolCallPolicy("ctx_execute", input, "block", watched);
   assert.equal(r.action, "block");
