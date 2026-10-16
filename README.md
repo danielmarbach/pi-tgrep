@@ -96,9 +96,9 @@ path into the fast one and closes the side doors.
      blocked, while the same constructs on other commands are left alone;
    - every block reason names what triggered it (the construct, or the unsupported flag) and
      keeps the phrase "bypasses the tgrep index" so `npm run analyze` can count blocks;
-     BRE-only patterns (`\(`, `\1`, …) and `ag`/`ack`/`pt` (flag semantics diverge from
-     rg/tgrep) run the original command untranslated, exact but slow; under
-     `PI_TGREP_BASH_POLICY=block` both are still blocked;
+     BRE patterns the converter can't prove equivalent (back-references such as `\1`, see Safety
+     notes) and `ag`/`ack`/`pt` (flag semantics diverge from rg/tgrep) run the original command
+     untranslated, exact but slow; under `PI_TGREP_BASH_POLICY=block` both are still blocked;
    - `zgrep`, `git log --grep`, and filenames containing "grep" are never touched.
 4. **Degrades gracefully**: no tgrep binary means it is fully dormant (built-in grep untouched,
    with a one-time offer to `brew install tgrep`). Index still building falls back to ripgrep
@@ -186,10 +186,16 @@ The only additions are metadata: `details.engine: "tgrep" | "rg-fallback"`,
   case.
 - grep accepts rg's `--type`/`-t`, `--type-not` and `--type-add`; `rg --include=GLOB` is
   translated to `-g GLOB` as `grep --include` is; `rg -P` maps like `--pcre2`.
-- Plain `grep` patterns using BRE-only syntax (`\(`, `\1`, …) are not translated. tgrep's
-  default engine is a Rust regex (ERE-like), so a translation would silently match
-  differently; the original command runs instead. `-E`/`egrep` need no flag; `-F`/`fgrep`
-  maps to `-F`; `-P`/`--perl-regexp` maps to tgrep's `-P` (PCRE2).
+- Plain `grep` (no `-E`/`-P`/`-F`) patterns are POSIX BRE, but tgrep's default engine is a Rust
+  regex (ERE-like), so the pattern is converted before it is passed on: `\|` `\(` `\)` `\{` `\}`
+  `\+` `\?` become `|` `(` `)` `{` `}` `+` `?`, `\<` and `\>` become `\b`, and the unescaped
+  `( ) { } + ? |`, which are literal in BRE, are escaped. A `*` that starts the pattern, a group
+  or an alternative, and a `^`/`$` that is not at the edge of the pattern, stay literal.
+  Anything the converter can't prove equivalent runs the original command instead: back-references
+  (`\1`), `\<`/`\>` that don't sit next to a required word character, stacked quantifiers,
+  empty alternatives (`a\|`), brackets containing `\`, unknown escapes such as `\d`.
+  `-E`/`egrep` need no flag; `-F`/`fgrep` maps to `-F`; `-P`/`--perl-regexp` maps to tgrep's
+  `-P` (PCRE2).
 - During a from-scratch index build the tgrep server answers from an empty index, so searches
   temporarily use ripgrep until `Indexing: complete`, favoring correctness over speed.
 
@@ -199,6 +205,10 @@ The only additions are metadata: `details.engine: "tgrep" | "rg-fallback"`,
 npm run typecheck   # npx tsc --noEmit -p tsconfig.json
 npm test            # node --test over harness.mjs + the *.test.mjs suites
 ```
+
+`test/differential.test.mjs` runs a battery of `grep`/`rg` commands twice, as written and as
+translated against a real index, and compares the sorted output and exit code; it is skipped when
+`tgrep` or `rg` is not installed. Known differences are listed in the battery with a reason.
 
 The test suites shell out to the real `tgrep` binary (`brew install tgrep`), so they need it on
 `PATH` locally and in CI (see `.github/workflows/ci.yml`, which runs on `macos-latest` for that

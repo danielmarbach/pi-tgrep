@@ -58,8 +58,11 @@ async function runQuotedTokensStayQuotedTests() {
     action: "rewrite",
     command: "tgrep search -n 'foo bar' f",
   });
-  // Literal '|' is text in BRE but alternation in tgrep's engine, so this must run unchanged.
-  await policyCase("grep -n 'foo|bar' f", "translate", { action: "allow" });
+  // Literal '|' is text in BRE but alternation in tgrep's engine, so it is escaped.
+  await policyCase("grep -n 'foo|bar' f", "translate", { action: "rewrite", command: "tgrep search -n 'foo\\|bar' f" });
+  // A converted pattern that was unquoted in the source must come out quoted.
+  await policyCase("grep a+ f", "translate", { action: "rewrite", command: "tgrep search 'a\\+' f" });
+  await policyCase("grep -rn 'it'\\''s\\|x' src", "translate", { action: "rewrite", command: "tgrep search -n 'it'\\''s|x' src" });
   // Synthesized -g globs from --include/--exclude must always stay quoted, regardless of source quoting.
   await policyCase("grep -rn --include='*.cs' needle .", "translate", {
     action: "rewrite",
