@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { hasIndexPathOverride, loadConfig, resolveIndexPath } from "../src/config.ts";
 import { applyToolCallPolicy, watchedKey } from "../src/watched-tools.ts";
+import { isGitIgnored } from "../src/git-ignore.ts";
 import { createGrepToolOverride } from "../src/grep-tool.ts";
 import { buildRewriteNote, isEmptyBashOutput } from "../src/rewrite-annotation.ts";
 import { repoRoot, ServerManager } from "../src/server-manager.ts";
@@ -54,6 +55,11 @@ export default function piTgrep(pi: ExtensionAPI) {
     }
     indexPositive.set(cwd, dir);
     return dir;
+  };
+
+  const shellIsIgnored = async (cwd: string, operand: string): Promise<boolean> => {
+    const root = await repoRoot(cwd);
+    return root ? isGitIgnored(root, path.resolve(cwd, operand)) : false;
   };
 
   const ensureToolRegistered = async (): Promise<boolean> => {
@@ -117,7 +123,7 @@ export default function piTgrep(pi: ExtensionAPI) {
       : undefined;
     // The policy resolves the index for the command's effective cwd (after any leading `cd`),
     // so `cd /repo && grep …` searches repo's index, not the session repo's.
-    const context = cfg.bashPolicy === "translate" ? { cwd: ctx.cwd, resolveIndex: shellIndexPath } : undefined;
+    const context = cfg.bashPolicy === "translate" ? { cwd: ctx.cwd, resolveIndex: shellIndexPath, isIgnored: shellIsIgnored } : undefined;
     const result = await applyToolCallPolicy(event.toolName, input, cfg.bashPolicy, cfg.watchedTools, context);
     if (result.action === "block") return { block: true, reason: result.reason };
     if (result.action === "rewrite" && original !== undefined && typeof input.command === "string") {

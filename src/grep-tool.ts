@@ -14,6 +14,7 @@ import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { Type, type Static } from "typebox";
+import { isGitIgnored } from "./git-ignore.ts";
 import { hasIndexPathOverride, resolveIndexPath } from "./config.ts";
 import { findTgrep, status } from "./tgrep-client.ts";
 import { repoRoot } from "./server-manager.ts";
@@ -33,6 +34,8 @@ type GrepParams = Static<typeof grepSchema>;
 export interface TgrepSpawnIndex {
   root: string;
   indexDirExists: boolean;
+  /** The search path is git-ignored, so tgrep must not apply parent ignore rules to it. */
+  searchPathIgnored?: boolean;
 }
 
 interface SearchEvent {
@@ -98,6 +101,7 @@ export function buildTgrepArgs(params: GrepParams, searchPath: string, index?: T
   if (index?.indexDirExists && isInsideRoot(index.root, searchPath)) {
     args.push("--index-path", resolveIndexPath(index.root));
   }
+  if (index?.searchPathIgnored) args.push("--no-ignore-parent");
   if (params.ignoreCase) args.push("-i");
   if (params.literal) args.push("-F");
   if (params.glob) args.push("-g", params.glob);
@@ -242,7 +246,7 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
           try {
             indexDirExists = (await stat(indexDir)).isDirectory();
           } catch {}
-          index = { root, indexDirExists };
+          index = { root, indexDirExists, searchPathIgnored: await isGitIgnored(root, searchPath) };
           const st = await status(pi, root, hasIndexPathOverride() ? indexDir : undefined);
           if (st.kind === "server" && !st.indexingComplete) {
             const fallback = await delegateToBuiltin({ reason: "indexing", message: "tgrep index still building" });

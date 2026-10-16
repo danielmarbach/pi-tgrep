@@ -8,6 +8,8 @@ export interface PolicyContext {
   cwd?: string;
   /** Resolves the index directory for a working directory; called with the effective cwd (after any leading `cd`). */
   resolveIndex?: (cwd: string) => Promise<string | undefined>;
+  /** Whether `operand` (relative to `cwd`, or absolute) is an existing git-ignored path inside a repo. */
+  isIgnored?: (cwd: string, operand: string) => Promise<boolean>;
 }
 
 export type BashPolicyAction = 
@@ -937,14 +939,28 @@ function renderOutToken(t: OutToken): string {
   return emitToken(t.text, t.quote === true);
 }
 
+const RG_NON_SEARCH_FLAGS = new Set(["--files", "--type-list", "--version", "--help", "-h", "-V"]);
+const GREP_NON_SEARCH_FLAGS = new Set(["--version", "--help", "-V"]);
+
+/** `rg --files`, `--help` and the like list or print things; tgrep has no equivalent. */
+function isNonSearchInvocation(bin: string, args: Token[]): boolean {
+  const flags = bin === "rg" ? RG_NON_SEARCH_FLAGS : GREP_NON_SEARCH_FLAGS;
+  for (const arg of args) {
+    if (arg.text === "--") return false;
+    if (flags.has(arg.text)) return true;
+  }
+  return false;
+}
+
 type SegmentResult = { kind: "verbatim" } | { kind: "rewrite"; text: string } | { kind: "block"; reason: string };
 
-function policySegment(
+async function policySegment(
   segment: string,
   mode: BashPolicyMode,
   indexPath: string | undefined,
   stdinFed: boolean,
-): SegmentResult {
+  isIgnored: ((operand: string) => Promise<boolean>) | undefined,
+): Promise<SegmentResult> {
   const { cmd, suffix } = splitRedirect(segment);
   const tokens = tokenizeDetailed(cmd);
   if (!tokens) {
@@ -959,6 +975,7 @@ function policySegment(
   // A shell expansion in an operand greps an explicit, dynamic list we can't resolve statically.
   if (rest.some((t) => t.expansion)) return { kind: "verbatim" };
   if (isScanOnlyBinary(bin)) return { kind: "verbatim" };
+  if (isNonSearchInvocation(bin, rest.slice(1))) return { kind: "verbatim" };
   const translation = bin === "rg" ? translateRg(rest.slice(1)) : translateGrep(bin, rest.slice(1));
   if ("error" in translation) {
     return {
@@ -969,9 +986,8 @@ function policySegment(
   if (bin !== "rg" && translation.patterns.some((p) => patternNeedsFallback(p, translation.engine))) {
     return { kind: "verbatim" };
   }
-  const forceScan = bin === "rg" && rest.some((t) => t.text === "--files");
   const minPositionals = translation.patternFlag ? 1 : 2;
-  if (translation.positionals.length < minPositionals && !forceScan) return { kind: "verbatim" };
+  if (translation.positionals.length < minPositionals) return { kind: "verbatim" };
   const rendered = ["tgrep", "search"];
   const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
   const paths = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
@@ -979,9 +995,17 @@ function policySegment(
   if (indexPath && !hasIndexPath && allPathsRelative) {
     rendered.push("--index-path", emitToken(indexPath, true));
   }
+  if (isIgnored && (await anyIgnored(paths, isIgnored))) rendered.push("--no-ignore-parent");
   rendered.push(...translation.tokens.map((t) => renderOutToken(t)));
   const cmdText = [...prefixes, ...rendered].join(" ");
   return { kind: "rewrite", text: suffix ? `${cmdText} ${suffix.trim()}` : cmdText };
+}
+
+async function anyIgnored(operands: string[], isIgnored: (operand: string) => Promise<boolean>): Promise<boolean> {
+  for (const operand of operands) {
+    if (await isIgnored(operand)) return true;
+  }
+  return false;
 }
 
 /** Working directory as the command runs; null once a `cd` target can't be resolved statically. */
@@ -1065,7 +1089,15 @@ export async function applyBashPolicy(
       result = { kind: "verbatim" };
     } else {
       const indexPath = cwd !== null && isGrepFamilyCommand(part) ? await indexFor(cwd) : undefined;
-      result = policySegment(part, mode, indexPath, scanned.stdinFed[i]!);
+      const segmentCwd = cwd;
+      const isIgnored = context?.isIgnored;
+      result = await policySegment(
+        part,
+        mode,
+        indexPath,
+        scanned.stdinFed[i]!,
+        segmentCwd !== null && isIgnored ? (operand) => isIgnored(segmentCwd, operand) : undefined,
+      );
     }
     switch (result.kind) {
       case "block": {
