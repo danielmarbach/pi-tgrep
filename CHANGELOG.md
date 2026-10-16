@@ -10,6 +10,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-16
+
 ### Added
 
 - `grep --type cs` / `-t cs`, `--type-not` and `--type-add` are now translated to tgrep instead
