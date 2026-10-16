@@ -178,6 +178,19 @@ The only additions are metadata: `details.engine: "tgrep" | "rg-fallback"`,
 `details.fallback: { reason: "indexing" | "no-binary" | "error", message? }`, and
 `details.truncated`.
 
+The `grep` tool also recovers from common model mistakes, adding only notices and metadata:
+
+- **Invalid regex.** A pattern tgrep cannot compile (`Generate(`, `Handle(Foo|Bar`) is retried once
+  as a literal (`-F`) before the ripgrep fallback. The result ends with
+  `[pi-tgrep] pattern is not a valid regex; searched literally` and has `details.regexFallback: true`.
+- **Multiple paths in one string.** If `path` does not exist as written but every
+  whitespace-separated token does (`"src tests"`), all of them are searched
+  (`details.searchPaths`). Results are shown relative to the working directory.
+- **Path not found.** The error keeps the `Path not found: <path>` prefix and adds the nearest
+  existing parent directory and up to 20 of its entries.
+- **tgrep errors.** When tgrep fails and the ripgrep fallback fails too, the error carries tgrep's
+  first stderr line (not just `tgrep exited with code 2`).
+
 ### Safety notes
 
 - GNU grep's `-r` is **recursive**, but tgrep's `-r` is `--replace`, so the translator drops

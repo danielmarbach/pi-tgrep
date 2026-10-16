@@ -10,7 +10,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { spawn, type ChildProcess } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { Type, type Static } from "typebox";
@@ -97,7 +97,7 @@ function isInsideRoot(root: string, target: string): boolean {
 }
 
 export function buildTgrepArgs(params: GrepParams, searchPath: string, index?: TgrepSpawnIndex): string[] {
-  const args = ["--json", "--line-number", "--color=never", "--hidden", "--no-messages"];
+  const args = ["--json", "--line-number", "--color=never", "--hidden"];
   if (index?.indexDirExists && isInsideRoot(index.root, searchPath)) {
     args.push("--index-path", resolveIndexPath(index.root));
   }
@@ -113,7 +113,7 @@ export function buildTgrepArgs(params: GrepParams, searchPath: string, index?: T
 function runSearch(
   bin: string,
   params: GrepParams,
-  searchPath: string,
+  searchPaths: SearchPaths,
   cwd: string,
   effectiveLimit: number,
   signal: AbortSignal | undefined,
@@ -130,7 +130,8 @@ function runSearch(
     };
     let child: ChildProcess;
     try {
-      child = spawn(bin, buildTgrepArgs(params, searchPath, index), { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      const args = [...buildTgrepArgs(params, searchPaths[0], index), ...searchPaths.slice(1)];
+      child = spawn(bin, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
       outcome.spawnError = error instanceof Error ? error : new Error(String(error));
       resolve(outcome);
@@ -192,12 +193,64 @@ function runSearch(
   });
 }
 
-async function isDir(p: string): Promise<boolean> {
+type PathKind = "dir" | "file" | "missing";
+type SearchPaths = [string, ...string[]];
+
+async function pathKind(p: string): Promise<PathKind> {
   try {
-    return (await stat(p)).isDirectory();
+    return (await stat(p)).isDirectory() ? "dir" : "file";
   } catch {
-    return true;
+    return "missing";
   }
+}
+
+const NOT_VALID_REGEX_NOTICE = "[pi-tgrep] pattern is not a valid regex; searched literally";
+const REGEX_ERROR = /regex (parse )?error/i;
+const MAX_LISTED_ENTRIES = 20;
+
+/** Models often pass several paths as one whitespace-separated string; split it only when every token exists. */
+async function resolveSearchPaths(cwd: string, rawPath: string | undefined): Promise<SearchPaths | { missing: string }> {
+  const whole = path.resolve(cwd, rawPath || ".");
+  if ((await pathKind(whole)) !== "missing") return [whole];
+  const tokens = (rawPath ?? "").split(/\s+/).filter(Boolean);
+  if (tokens.length > 1) {
+    const resolved = tokens.map((token) => path.resolve(cwd, token));
+    const kinds = await Promise.all(resolved.map(pathKind));
+    if (kinds.every((kind) => kind !== "missing")) return [resolved[0] as string, ...resolved.slice(1)];
+  }
+  return { missing: whole };
+}
+
+async function describeMissingPath(missing: string): Promise<string> {
+  let parent = path.dirname(missing);
+  while ((await pathKind(parent)) !== "dir" && path.dirname(parent) !== parent) parent = path.dirname(parent);
+  const message = [`Path not found: ${missing}`];
+  try {
+    const entries = (await readdir(parent, { withFileTypes: true }))
+      .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+      .sort();
+    const listed = entries.slice(0, MAX_LISTED_ENTRIES).join(", ");
+    const more = entries.length > MAX_LISTED_ENTRIES ? `, … (${entries.length - MAX_LISTED_ENTRIES} more)` : "";
+    message.push(`Nearest existing directory: ${parent}`, `Entries: ${listed || "(empty)"}${more}`);
+  } catch {
+    message.push(`Nearest existing directory: ${parent}`);
+  }
+  return message.join("\n");
+}
+
+function searchFailed(outcome: SearchOutcome): boolean {
+  return Boolean(
+    outcome.spawnError || (outcome.code !== null && outcome.code !== 0 && outcome.code !== 1 && !outcome.killedDueToLimit),
+  );
+}
+
+function describeSearchFailure(outcome: SearchOutcome): string {
+  if (outcome.spawnError) return outcome.spawnError.message;
+  const reason = outcome.stderr
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line && !/^(warning|note):/.test(line));
+  return reason ?? `tgrep exited with code ${outcome.code}`;
 }
 
 export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof grepSchema> {
@@ -219,7 +272,9 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
       ctx: ExtensionContext,
     ): Promise<AgentToolResult<unknown>> {
       const effectiveLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
-      const searchPath = path.resolve(ctx.cwd, params.path || ".");
+      const resolvedPaths = await resolveSearchPaths(ctx.cwd, params.path);
+      if (!Array.isArray(resolvedPaths)) throw new Error(await describeMissingPath(resolvedPaths.missing));
+      const searchPaths = resolvedPaths;
 
       const delegateToBuiltin = async (fallback: FallbackInfo): Promise<AgentToolResult<unknown> | null> => {
         try {
@@ -246,7 +301,7 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
           try {
             indexDirExists = (await stat(indexDir)).isDirectory();
           } catch {}
-          index = { root, indexDirExists, searchPathIgnored: await isGitIgnored(root, searchPath) };
+          index = { root, indexDirExists, searchPathIgnored: (await Promise.all(searchPaths.map((p) => isGitIgnored(root, p)))).some(Boolean) };
           const st = await status(pi, root, hasIndexPathOverride() ? indexDir : undefined);
           if (st.kind === "server" && !st.indexingComplete) {
             const fallback = await delegateToBuiltin({ reason: "indexing", message: "tgrep index still building" });
@@ -255,25 +310,34 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
         }
       } catch {}
 
-      const outcome = await runSearch(bin, params, searchPath, ctx.cwd, effectiveLimit, signal, index);
+      const spawnIndex = index && searchPaths.every((p) => isInsideRoot(index.root, p)) ? index : undefined;
+      let outcome = await runSearch(bin, params, searchPaths, ctx.cwd, effectiveLimit, signal, spawnIndex);
       if (outcome.aborted) throw new Error("Operation aborted");
-      if (outcome.spawnError || (outcome.code !== null && outcome.code !== 0 && outcome.code !== 1 && !outcome.killedDueToLimit)) {
-        const fallback = await delegateToBuiltin({
-          reason: "error",
-          message: outcome.spawnError?.message ?? (outcome.stderr.trim() || `tgrep exited with code ${outcome.code}`),
-        });
+      let regexFallback = false;
+      if (outcome.code === 2 && !params.literal && REGEX_ERROR.test(outcome.stderr)) {
+        const literalOutcome = await runSearch(bin, { ...params, literal: true }, searchPaths, ctx.cwd, effectiveLimit, signal, spawnIndex);
+        if (literalOutcome.aborted) throw new Error("Operation aborted");
+        if (!searchFailed(literalOutcome)) {
+          outcome = literalOutcome;
+          regexFallback = true;
+        }
+      }
+      if (searchFailed(outcome)) {
+        const failure = describeSearchFailure(outcome);
+        const fallback = await delegateToBuiltin({ reason: "error", message: failure });
         if (fallback) return fallback;
-        if (outcome.spawnError) throw new Error(`Failed to run tgrep: ${outcome.spawnError.message}`);
-        throw new Error(outcome.stderr.trim() || `tgrep exited with code ${outcome.code}`);
+        throw new Error(outcome.spawnError ? `Failed to run tgrep: ${failure}` : failure);
       }
 
-      const isDirectory = await isDir(searchPath);
+      const searchPath = searchPaths[0];
+      const isDirectory = searchPaths.length === 1 && (await pathKind(searchPath)) === "dir";
       const formatPath = (filePath: string): string => {
-        if (isDirectory) {
-          const relative = path.relative(searchPath, filePath);
-          if (relative && !relative.startsWith("..")) return relative.replace(/\\/g, "/");
+        const base = isDirectory ? searchPath : ctx.cwd;
+        if (isDirectory || searchPaths.length > 1) {
+          const relative = path.relative(base, filePath);
+          if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) return relative.replace(/\\/g, "/");
         }
-        return path.basename(filePath);
+        return searchPaths.length > 1 ? filePath : path.basename(filePath);
       };
 
       const seen = new Set<string>();
@@ -290,13 +354,17 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
         outputLines.push(event.isMatch ? `${relPath}:${event.lineNumber}: ${text}` : `${relPath}-${event.lineNumber}- ${text}`);
       }
 
+      const details: Record<string, unknown> = { engine: "tgrep" };
+      if (regexFallback) details.regexFallback = true;
+      if (searchPaths.length > 1) details.searchPaths = searchPaths;
+
       if (outcome.matchCount === 0) {
-        return { content: [{ type: "text", text: "No matches found" }], details: { engine: "tgrep" } };
+        const text = regexFallback ? `No matches found\n\n${NOT_VALID_REGEX_NOTICE}` : "No matches found";
+        return { content: [{ type: "text", text }], details };
       }
 
       const truncation = truncateHead(outputLines.join("\n"), { maxLines: Number.MAX_SAFE_INTEGER });
       let output = truncation.content;
-      const details: Record<string, unknown> = { engine: "tgrep" };
       const notices: string[] = [];
       if (outcome.killedDueToLimit) {
         notices.push(`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`);
@@ -312,6 +380,7 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
         details.linesTruncated = true;
       }
       if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
+      if (regexFallback) output += `\n\n${NOT_VALID_REGEX_NOTICE}`;
 
       return { content: [{ type: "text", text: output }], details };
     },
