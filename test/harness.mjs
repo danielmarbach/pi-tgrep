@@ -87,7 +87,47 @@ async function runPolicyTests() {
   await policyCase("git log --grep needle", "translate", { action: "allow" });
   // BRE-only patterns run verbatim: original grep preserves exact semantics
   await policyCase("grep 'a\\(b\\)' f", "translate", { action: "allow" });
-  await policyCase("rg --files", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' --files" }, IDX);
+  // tgrep has no file-listing mode, so non-search invocations run verbatim
+  await policyCase("rg --files", "translate", { action: "allow" }, IDX);
+  await policyCase("rg --files -g '*.md'", "translate", { action: "allow" }, IDX);
+  await policyCase("rg --files | head", "translate", { action: "allow" }, IDX);
+  await policyCase("rg --files src", "translate", { action: "allow" }, IDX);
+  await policyCase("rg --type-list", "translate", { action: "allow" }, IDX);
+  await policyCase("rg --version", "translate", { action: "allow" }, IDX);
+  await policyCase("rg --help", "translate", { action: "allow" }, IDX);
+  await policyCase("rg -h", "translate", { action: "allow" }, IDX);
+  await policyCase("grep --help", "translate", { action: "allow" }, IDX);
+  await policyCase("grep --version", "translate", { action: "allow" }, IDX);
+  // grep -h means --no-filename, so it still translates
+  await policyCase("grep -rh needle src", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -I needle src",
+  }, IDX);
+  // git-ignored operands drop parent ignore rules; other operands don't
+  const ignoredBuild = (cwd, operand) => Promise.resolve(operand === "bin/Debug" || operand === "/abs/obj");
+  await policyCase("rg -l ERROR bin/Debug", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' --no-ignore-parent -l ERROR bin/Debug",
+  }, { ...IDX, isIgnored: ignoredBuild });
+  await policyCase("rg -l ERROR src", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -l ERROR src",
+  }, { ...IDX, isIgnored: ignoredBuild });
+  await policyCase("grep -rn ERROR /abs/obj", "translate", {
+    action: "rewrite",
+    command: "tgrep search --no-ignore-parent -n ERROR /abs/obj",
+  }, { isIgnored: ignoredBuild });
+  await policyCase("rg -e ERROR -e WARN bin/Debug", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' --no-ignore-parent -e ERROR -e WARN bin/Debug",
+  }, { ...IDX, isIgnored: ignoredBuild });
+  // the ignore check runs against the directory the segment executes in
+  const ignoredCwds = [];
+  await policyCase("cd /x && rg -l ERROR bin/Debug", "translate", {
+    action: "rewrite",
+    command: "cd /x && tgrep search --no-ignore-parent -l ERROR bin/Debug",
+  }, { isIgnored: async (cwd, operand) => (ignoredCwds.push(cwd), true) });
+  assert.deepEqual(ignoredCwds, ["/x"]);
   await policyCase("sudo grep -i needle /etc/hosts", "translate", {
     action: "rewrite",
     command: "sudo tgrep search -i needle /etc/hosts",

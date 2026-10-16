@@ -29,6 +29,9 @@ path into the fast one and closes the side doors.
    under the repo root automatically pass `--index-path <index dir>`, because tgrep only looks
    for the index next to the searched path, so a subdirectory search would otherwise silently
    fall back to scanning every file.
+   A search path that is itself git-ignored (`bin/Debug`, `node_modules/pkg`, a single file
+   inside `obj/`) passes `--no-ignore-parent`, so it returns the same hits as ripgrep instead
+   of "No matches found"; non-ignored paths are unaffected and still skip their ignored files.
 3. **Guards the shell**: a `tool_call` hook inspects `bash` **and MCP shell-executing tools**
    (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, bare or namespaced like
    `mcp__context-mode__ctx_execute`, extend via `PI_TGREP_WATCH_TOOLS`), pipeline-aware:
@@ -54,6 +57,11 @@ path into the fast one and closes the side doors.
      files directly (tgrep prints its own notice) — a bare query-mode `tgrep`, which would
      rebuild an index beside the searched path or hang, is never emitted; `-e`/`--regexp`/
      `-f`/`--file` pattern arguments are tracked so a pattern never masquerades as a path;
+   - the same `--no-ignore-parent` is added when a translated command's path operand exists in
+     the repo and `git check-ignore` reports it ignored;
+   - `rg --files`, `rg --type-list`, `rg -h/--help/-V/--version` and `grep --help/--version`
+     print listings or help rather than search, so they run unchanged (tgrep has no file-listing
+     mode);
    - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim: no tree scan, no block;
    - `ctx_execute`/`ctx_execute_file` shell code is scanned exactly like a `bash` command:
      newlines separate commands, `#` comments are ignored, and heredoc bodies are left
@@ -146,6 +154,7 @@ src/tgrep-client.ts   binary discovery, status parsing (both output shapes), ser
                       discovery + PID liveness, stop (SIGTERM→SIGKILL; tgrep has no stop cmd)
 src/server-manager.ts repo-root detection, detached `tgrep serve` spawn, .git/info/exclude
                       maintenance, readiness monitor, per-scope shutdown, reindex
+src/git-ignore.ts      `git check-ignore` wrapper deciding when a search path needs --no-ignore-parent
 src/grep-tool.ts      the grep override: TypeBox schema identical to the built-in, tgrep
                       --json streaming (ripgrep event schema, parsed 1:1), built-in truncation
                       rules via pi's own helpers, abort handling, rg fallback while indexing

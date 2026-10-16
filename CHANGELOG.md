@@ -10,6 +10,16 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+### Fixed
+
+- Searching inside a git-ignored path (`bin/Debug`, `obj/`, `node_modules/pkg`, or a file within
+  them) with the `grep` tool or a translated `grep`/`rg` command no longer reports "No matches
+  found" for a place that has matches; it now returns the same hits as ripgrep. Searches of
+  normal directories still skip their ignored files.
+- `rg --files` is no longer translated into a failing `tgrep search` command. `rg --files`,
+  `rg --type-list`, `rg --help`/`-h`, `rg --version` and `grep --help`/`--version` now run
+  unchanged.
+
 ## [0.4.0] - 2026-10-01
 
 ### Changed
