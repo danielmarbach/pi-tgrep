@@ -10,6 +10,22 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+### Added
+
+- `grep --type cs` / `-t cs`, `--type-not` and `--type-add` are now translated to tgrep instead
+  of being blocked as unrecognized flags.
+- `rg --include='*.ts'` (which `rg` itself rejects) is now translated to `-g '*.ts'`, as
+  `grep --include` already was, and `rg -P` is translated like `rg --pcre2`.
+
+### Changed
+
+- A grep inside `$(…)` or backticks is no longer blocked outright. Stdin filters
+  (`X=$(git ls-files | grep -v obj/)`, `for f in $(ls | grep ts)`) and commands that merely
+  mention `rg` (`X=$(which rg)`) run unchanged, and a real tree scan
+  (`for f in $(grep -rl X src | grep -v obj/)`) is now translated in place. It is still blocked
+  when an in-place rewrite is unsafe: a backgrounded grep or unsupported flag inside it,
+  unparseable quoting, or a backtick body with backslash escapes.
+
 ### Fixed
 
 - Searching inside a git-ignored path (`bin/Debug`, `obj/`, `node_modules/pkg`, or a file within
@@ -19,6 +35,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - `rg --files` is no longer translated into a failing `tgrep search` command. `rg --files`,
   `rg --type-list`, `rg --help`/`-h`, `rg --version` and `grep --help`/`--version` now run
   unchanged.
+- `grep -rn pattern file` now keeps the file name prefix when translated (`grep -r` prints it
+  even for one file; tgrep omitted it).
 
 ## [0.4.0] - 2026-10-01
 

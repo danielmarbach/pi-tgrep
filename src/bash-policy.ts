@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import path from "node:path";
 import type { BashPolicyMode } from "./config.js";
 
@@ -51,8 +52,8 @@ function blockReason(clause: string): string {
 }
 
 const SUBSTITUTION_BLOCK_REASON = blockReason(
-  "This greps inside a command substitution ($(…) or backticks), which can't be rewritten in " +
-    "place. Run that search as its own command.",
+  "This greps inside a backtick command substitution whose body uses backslash escapes, which " +
+    "can't be rewritten in place safely. Use $(…) or run that search as its own command.",
 );
 const BACKGROUND_BLOCK_REASON = blockReason(
   "Backgrounding with & isn't scanned for safety. Run the grep segment in the foreground, or " +
@@ -81,7 +82,7 @@ const RG_SHORT_SPECS: Record<string, RgShortSpec> = {
   c: { kind: "flag" }, o: { kind: "flag" }, q: { kind: "flag" }, a: { kind: "flag" },
   H: { kind: "flag" }, I: { kind: "flag" }, n: { kind: "flag" }, N: { kind: "flag" },
   p: { kind: "flag" }, b: { kind: "flag" }, x: { kind: "flag" }, L: { kind: "flag" },
-  "0": { kind: "flag" }, u: { kind: "flag" },
+  "0": { kind: "flag" }, u: { kind: "flag" }, P: { kind: "flag" },
   e: { kind: "arg" }, f: { kind: "arg" }, m: { kind: "arg" }, g: { kind: "arg" },
   t: { kind: "arg" }, T: { kind: "arg" }, A: { kind: "arg" }, B: { kind: "arg" },
   C: { kind: "arg" }, M: { kind: "arg" }, E: { kind: "arg" }, j: { kind: "arg" },
@@ -154,6 +155,7 @@ const GREP_SHORT_SPECS: Record<string, GrepShortSpec> = {
   x: { kind: "emit", to: "-x" }, Z: { kind: "emit", to: "-0" },
   y: { kind: "emit", to: "-i" }, h: { kind: "emit", to: "-I" },
   P: { kind: "emit", to: "-P", engine: "pcre" },
+  t: { kind: "arg", to: "-t" },
   A: { kind: "arg", to: "-A" }, B: { kind: "arg", to: "-B" },
   C: { kind: "arg", to: "-C" }, m: { kind: "arg", to: "-m" },
   e: { kind: "arg", to: "-e" }, f: { kind: "arg", to: "-f" },
@@ -194,6 +196,9 @@ const GREP_LONG_SPECS: Record<`--${string}`, GrepLongSpec> = {
   "--before-context": { kind: "arg", to: "-B" },
   "--context": { kind: "arg", to: "-C" },
   "--max-count": { kind: "arg", to: "-m" },
+  "--type": { kind: "arg", to: "--type" },
+  "--type-not": { kind: "arg", to: "--type-not" },
+  "--type-add": { kind: "arg", to: "--type-add" },
   "--regexp": { kind: "arg", to: "-e", patternSource: "regexp" },
   "--file": { kind: "arg", to: "-f", patternSource: "file" },
   "--include": { kind: "glob", mode: "include" },
@@ -273,6 +278,8 @@ interface Translation {
   patternFlag: boolean;
   patterns: string[];
   engine: GrepEngine;
+  /** `-r`/`-R` was given, which makes grep print file names even for a single file operand. */
+  recursive?: boolean;
 }
 
 /** End index (after the closing quote) of a `$'…'` string starting at `start`, or -1 if unterminated. */
@@ -383,6 +390,15 @@ interface ScannedCommand {
   blocks: (string | undefined)[];
   /** Heredoc bodies (terminator included); separators carry an opaque marker in their place. */
   heredocs: string[];
+  /** substitutions[i]: the `$(…)` / backtick bodies inside parts[i], in source order. */
+  substitutions: Substitution[][];
+}
+
+interface Substitution {
+  /** Offset of the body inside its part. */
+  offset: number;
+  body: string;
+  backtick: boolean;
 }
 
 const HEREDOC_MARKER = /\u0001H(\d+)\u0001/g;
@@ -513,8 +529,10 @@ function scanPipeline(command: string): ScanResult {
   const stdinFed: boolean[] = [];
   const blocks: (string | undefined)[] = [];
   const heredocs: string[] = [];
+  const substitutions: Substitution[][] = [];
   const pending: PendingHeredoc[] = [];
   let current = "";
+  let currentSubstitutions: Substitution[] = [];
   let currentStdinFed = false;
   let currentBlock: string | undefined;
   let inSingle = false;
@@ -524,8 +542,10 @@ function scanPipeline(command: string): ScanResult {
     parts.push(current);
     stdinFed.push(currentStdinFed);
     blocks.push(currentBlock);
+    substitutions.push(currentSubstitutions);
     separators.push(separator);
     current = "";
+    currentSubstitutions = [];
     currentStdinFed = false;
     currentBlock = undefined;
   };
@@ -586,7 +606,7 @@ function scanPipeline(command: string): ScanResult {
     if (c === "`") {
       const sub = consumeBacktickSubstitution(command, i);
       if (!sub) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
-      if (FAMILY_PATTERN.test(sub.body)) return { kind: "block", reason: SUBSTITUTION_BLOCK_REASON };
+      currentSubstitutions.push({ offset: current.length + 1, body: sub.body, backtick: true });
       current += command.slice(i, sub.end);
       i = sub.end;
       continue;
@@ -649,7 +669,7 @@ function scanPipeline(command: string): ScanResult {
     if (c === "$" && command[i + 1] === "(") {
       const sub = consumeParenSubstitution(command, i + 1);
       if (!sub) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
-      if (FAMILY_PATTERN.test(sub.body)) return { kind: "block", reason: SUBSTITUTION_BLOCK_REASON };
+      currentSubstitutions.push({ offset: current.length + 2, body: sub.body, backtick: false });
       current += command.slice(i, sub.end);
       i = sub.end;
       continue;
@@ -683,7 +703,8 @@ function scanPipeline(command: string): ScanResult {
   parts.push(current);
   stdinFed.push(currentStdinFed);
   blocks.push(currentBlock);
-  return { kind: "parts", parts, separators, stdinFed, blocks, heredocs };
+  substitutions.push(currentSubstitutions);
+  return { kind: "parts", parts, separators, stdinFed, blocks, heredocs, substitutions };
 }
 
 function splitRedirect(segment: string): { cmd: string; suffix: string } {
@@ -798,6 +819,14 @@ function translateRg(tokens: Token[]): Translation | { error: string } {
     if (t.text.startsWith("--")) {
       const eq = t.text.indexOf("=");
       const name = (eq === -1 ? t.text : t.text.slice(0, eq)) as `--${string}`;
+      // rg has no --include; grep users mean -g.
+      if (name === "--include") {
+        const value = eq === -1 ? tokens[++i]?.text : t.text.slice(eq + 1);
+        if (value === undefined) return { error: `${name} requires a value` };
+        out.push({ text: "-g" }, { text: value, quote: true });
+        i++;
+        continue;
+      }
       const spec = RG_LONG_SPECS[name];
       if (!spec) return { error: `${name} is not recognized` };
       if (spec.kind === "arg" && spec.patternSource) patternFlag = true;
@@ -836,6 +865,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
   const positionalTokens: Token[] = [];
   const ePatterns: string[] = [];
   let patternFlag = false;
+  let recursive = false;
   let engine: GrepEngine = bin === "egrep" ? "ere" : bin === "fgrep" ? "fixed" : "bre";
   if (bin === "fgrep") out.push({ text: "-F" });
   let i = 0;
@@ -855,6 +885,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
         case "emit":
         case "drop":
           if (spec.engine) engine = spec.engine;
+          if (name === "--recursive" || name === "--dereference-recursive") recursive = true;
           if (spec.kind === "emit") out.push({ text: spec.to });
           break;
         case "arg": {
@@ -896,6 +927,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
         (ch) => {
           const spec = GREP_SHORT_SPECS[ch];
           if (!spec) return null;
+          if (ch === "r" || ch === "R") recursive = true;
           if (spec.kind !== "arg" && spec.engine) engine = spec.engine;
           return spec.kind === "emit" ? spec.to : "";
         },
@@ -924,7 +956,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
   const positionals = positionalTokens.map((p) => p.text);
   const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!] : [];
   for (const p of positionalTokens) out.push(passThrough(p));
-  return { tokens: out, positionals, patternFlag, patterns, engine };
+  return { tokens: out, positionals, patternFlag, patterns, engine, recursive };
 }
 
 function emitToken(text: string, forceQuote: boolean): string {
@@ -952,6 +984,11 @@ function isNonSearchInvocation(bin: string, args: Token[]): boolean {
   return false;
 }
 
+function isExistingNonDirectory(operand: string, cwd: string): boolean {
+  const stats = statSync(path.resolve(cwd, operand), { throwIfNoEntry: false });
+  return stats !== undefined && !stats.isDirectory();
+}
+
 type SegmentResult = { kind: "verbatim" } | { kind: "rewrite"; text: string } | { kind: "block"; reason: string };
 
 async function policySegment(
@@ -960,6 +997,7 @@ async function policySegment(
   indexPath: string | undefined,
   stdinFed: boolean,
   isIgnored: ((operand: string) => Promise<boolean>) | undefined,
+  cwd: string | undefined,
 ): Promise<SegmentResult> {
   const { cmd, suffix } = splitRedirect(segment);
   const tokens = tokenizeDetailed(cmd);
@@ -991,6 +1029,15 @@ async function policySegment(
   const rendered = ["tgrep", "search"];
   const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
   const paths = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
+  if (
+    translation.recursive &&
+    cwd !== undefined &&
+    paths.length === 1 &&
+    !translation.tokens.some((t) => t.text === "-H" || t.text === "-I") &&
+    isExistingNonDirectory(paths[0]!, cwd)
+  ) {
+    translation.tokens.unshift({ text: "-H" });
+  }
   const allPathsRelative = paths.every((p) => !p.startsWith("/") && !p.startsWith("~"));
   if (indexPath && !hasIndexPath && allPathsRelative) {
     rendered.push("--index-path", emitToken(indexPath, true));
@@ -1041,6 +1088,33 @@ function trailingSpace(text: string): string {
   return text.slice(text.trimEnd().length);
 }
 
+/** Runs the policy over each `$(…)` / backtick body in `part`, rewriting a translatable search in place. */
+async function applySubstitutionPolicy(
+  part: string,
+  substitutions: Substitution[],
+  mode: BashPolicyMode,
+  context: PolicyContext | undefined,
+  cwd: Cwd,
+): Promise<{ kind: "block"; reason: string } | { kind: "ok"; part: string; changed: boolean }> {
+  // The index can't be located without knowing the directory, so run as-is.
+  if (cwd === null && mode !== "block") return { kind: "ok", part, changed: false };
+  let result = part;
+  let changed = false;
+  for (const sub of [...substitutions].reverse()) {
+    if (!FAMILY_PATTERN.test(sub.body)) continue;
+    const inner = await applyBashPolicy(sub.body, mode, { ...context, cwd: cwd ?? undefined });
+    if (inner.action === "block") return { kind: "block", reason: inner.reason };
+    if (inner.action !== "rewrite") continue;
+    // A backtick body is unescaped by the shell first, so its text isn't what was scanned.
+    if (sub.backtick && (sub.body.includes("\\") || inner.command.includes("`"))) {
+      return { kind: "block", reason: SUBSTITUTION_BLOCK_REASON };
+    }
+    result = result.slice(0, sub.offset) + inner.command + result.slice(sub.offset + sub.body.length);
+    changed = true;
+  }
+  return { kind: "ok", part: result, changed };
+}
+
 export async function applyBashPolicy(
   command: string,
   mode: BashPolicyMode,
@@ -1071,7 +1145,14 @@ export async function applyBashPolicy(
   const rendered: string[] = [];
   let changed = false;
   for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]!;
+    let part = parts[i]!;
+    const substituted = await applySubstitutionPolicy(part, scanned.substitutions[i]!, mode, context, cwd);
+    if (substituted.kind === "block") {
+      const where = command.includes("\n") ? ` (in: ${part.trim().slice(0, 120)})` : "";
+      return { action: "block", reason: `${substituted.reason}${where}` };
+    }
+    part = substituted.part;
+    changed ||= substituted.changed;
     // A cd in a pipeline or in the background runs in a subshell and doesn't move this shell.
     const inSubshell = separators[i - 1] === "|" || separators[i] === "|" || separators[i] === "&";
     const afterCd: Cwd | undefined = inSubshell ? undefined : cwdAfterCd(part, cwd);
@@ -1097,6 +1178,7 @@ export async function applyBashPolicy(
         indexPath,
         scanned.stdinFed[i]!,
         segmentCwd !== null && isIgnored ? (operand) => isIgnored(segmentCwd, operand) : undefined,
+        cwd ?? undefined,
       );
     }
     switch (result.kind) {
