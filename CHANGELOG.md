@@ -16,6 +16,13 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   of being blocked as unrecognized flags.
 - `rg --include='*.ts'` (which `rg` itself rejects) is now translated to `-g '*.ts'`, as
   `grep --include` already was, and `rg -P` is translated like `rg --pcre2`.
+- The `grep` tool retries a pattern that is not a valid regex (`Generate(`, `Handle(Foo|Bar`) as a
+  literal string instead of failing, and says so at the end of the result
+  (`[pi-tgrep] pattern is not a valid regex; searched literally`).
+- The `grep` tool accepts several paths in one string (`path: "src tests"`) when every
+  whitespace-separated part exists.
+- A `Path not found` error from the `grep` tool now names the nearest existing parent directory and
+  lists up to 20 of its entries.
 
 ### Changed
 
@@ -46,6 +53,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - A literal `$` or `^` in the middle of a plain `grep` pattern (`grep -rn 'costs $5' .`) and a
   leading `*` (`grep -rn '*.ts' .`) were passed to tgrep as regex operators, so the translated
   command matched nothing or something else. They now match literally, as in `grep`.
+- When both tgrep and the ripgrep fallback fail, the `grep` tool error now includes tgrep's reason
+  instead of a bare `tgrep exited with code 2`.
 
 ## [0.4.0] - 2026-10-01
 
