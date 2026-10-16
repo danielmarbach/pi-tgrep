@@ -77,7 +77,7 @@ async function runPolicyTests() {
   await policyCase("echo hi && grep foo .", "translate", { action: "rewrite", command: "echo hi && tgrep search --index-path '/repo/.tgrep' foo ." }, IDX);
   // an untranslatable search part still blocks the whole compound
   await policyCase("grep -d skip foo .; rm x", "translate", { action: "block" });
-  await policyCase("echo $(rg foo .)", "translate", { action: "block" });
+  await policyCase("echo $(rg foo .)", "translate", { action: "rewrite", command: "echo $(tgrep search --index-path '/repo/.tgrep' foo .)" }, IDX);
   await policyCase("grep foo < in.txt", "translate", { action: "block" });
   await policyCase("grep -rn --include=*.ts needle .", "translate", {
     action: "rewrite",
@@ -184,7 +184,63 @@ async function runPolicyTests() {
     action: "rewrite",
     command: "cd /x && tgrep search --index-path '/repo/.tgrep' foo . 2>/dev/null",
   }, IDX);
+  // grep --type/-t pass through to tgrep like the rg flags do
+  await policyCase("grep -rn needle . --type md", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n --type md needle ." }, IDX);
+  await policyCase("grep -rn --type=cs --type-not md needle .", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n --type cs --type-not md needle ." }, IDX);
+  await policyCase("grep -rn --type-add 'web:*.html' -t web needle .", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n --type-add 'web:*.html' -t web needle ." }, IDX);
+  // rg has no --include; it becomes -g as it does for grep
+  await policyCase("rg --include='*.ts' needle .", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -g '*.ts' needle ." }, IDX);
+  await policyCase("rg -n --include '*.ts' needle src", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n -g '*.ts' needle src" }, IDX);
+  await policyCase("rg -P 'a(?=b)' .", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -P 'a(?=b)' ." }, IDX);
+  await policyCase("rg -nP 'a(?=b)' .", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n -P 'a(?=b)' ." }, IDX);
+  // BSD/GNU -r implies -H, tgrep omits the file name for a single file operand
+  const fixtureIdx = { ...IDX, cwd: FIXTURE };
+  await policyCase("grep -rn needle src/app.ts", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -H -n needle src/app.ts" }, fixtureIdx);
+  await policyCase("grep -Rn needle src/app.ts", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -H -n needle src/app.ts" }, fixtureIdx);
+  await policyCase("grep --recursive -n needle src/app.ts", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -H -n needle src/app.ts" }, fixtureIdx);
+  await policyCase("grep -rn needle src", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n needle src" }, fixtureIdx);
+  await policyCase("grep -rn needle src/app.ts src/util.ts", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n needle src/app.ts src/util.ts" }, fixtureIdx);
+  await policyCase("grep -rhn needle src/app.ts", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -I -n needle src/app.ts" }, fixtureIdx);
+  await policyCase("grep -rnH needle src/app.ts", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n -H needle src/app.ts" }, fixtureIdx);
+  await policyCase("grep -n needle src/app.ts", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n needle src/app.ts" }, fixtureIdx);
+  await policyCase("grep -rn needle missing.ts", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' -n needle missing.ts" }, fixtureIdx);
   console.log("policy tests ok");
+}
+
+async function runFlagParityExecTest() {
+  const originalSortedOutput = async (command, args) => {
+    const res = await pi.exec(command, args, { cwd: FIXTURE });
+    return { code: res.code, lines: res.stdout.split("\n").filter(Boolean).sort() };
+  };
+  const translatedSortedOutput = async (command) => {
+    const result = await applyBashPolicy(command, "translate", { cwd: FIXTURE });
+    assert.equal(result.action, "rewrite", command);
+    const res = await pi.exec("bash", ["-c", result.command], { cwd: FIXTURE });
+    return { code: res.code, lines: res.stdout.split("\n").filter(Boolean).sort() };
+  };
+
+  const rgAvailable = (await pi.exec("rg", ["--version"])).code === 0;
+  if (rgAvailable) {
+    const parity = [
+      ["rg -n --type md needle .", ["-n", "--type", "md", "needle", "."]],
+      ["rg -P -n 'ne(?=ed)' .", ["-P", "-n", "ne(?=ed)", "."]],
+      ["rg -n --include='*.ts' needle .", ["-n", "-g", "*.ts", "needle", "."]],
+      ["grep -rn --type md needle .", ["-n", "--type", "md", "needle", "."]],
+    ];
+    for (const [command, rgArgs] of parity) {
+      const expected = await originalSortedOutput("rg", rgArgs);
+      assert.ok(expected.lines.length > 0, `no rg matches for ${command}`);
+      assert.deepEqual(await translatedSortedOutput(command), expected, command);
+    }
+  }
+
+  const singleFile = await translatedSortedOutput("grep -rn needle src/app.ts");
+  assert.deepEqual(singleFile.lines, ['src/app.ts:4:  const needle = "gold";', "src/app.ts:5:  return search(needle);"]);
+  const grepVersion = await pi.exec("grep", ["--version"]);
+  if (/BSD/.test(grepVersion.stdout)) {
+    assert.deepEqual(singleFile, await originalSortedOutput("grep", ["-rn", "needle", "src/app.ts"]));
+  }
+  console.log("flag parity exec tests ok");
 }
 
 async function runRedirectExecTest() {
@@ -478,6 +534,7 @@ try {
   await runPolicyTests();
   await runRedirectExecTest();
   await runBackslashPatternExecTest();
+  await runFlagParityExecTest();
   await runWatchedToolsTests();
   runGrepArgsTests(repoDir);
   await runGrepToolTests(repoDir);

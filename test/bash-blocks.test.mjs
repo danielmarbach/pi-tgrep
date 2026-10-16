@@ -38,21 +38,97 @@ async function runShellExpansionTranslateTests() {
   console.log("shell expansion translate tests ok");
 }
 
-async function runNestedSearchBlockTests() {
-  // A grep inside a substitution can't be translated: the outer command must not silently misrun.
-  await policyCase("x=$(grep -rn foo src | head -1)", "translate", { action: "block" });
-  await policyCase("echo `grep -rn foo src`", "translate", { action: "block" });
+async function runSubstitutionPassThroughTests() {
+  // Stdin-fed greps and non-grep primary binaries inside a substitution run unchanged.
+  const unchanged = [
+    "X=$(git ls-files | grep -v obj/)",
+    "X=$(cat package.json | grep name)",
+    "for f in $(ls | grep ts); do echo $f; done",
+    "files=$(git ls-files '*.ts' | grep -vE '(^|/)(bin|obj)/'); echo \"$files\"",
+    "rg -n '[x]' $(git ls-files '*.ts' | grep -v test) || true",
+    "X=$(which rg)",
+    "X=$(command -v rg)",
+    "X=$(ls /opt/homebrew/bin/rg)",
+    "X=`git ls-files | grep -v obj/`",
+    "cd $(git rev-parse --show-toplevel | grep -v x) && ls",
+  ];
+  for (const command of unchanged) {
+    await policyCase(command, "translate", { action: "allow" }, { indexPath: "/repo/.tgrep" });
+  }
+  console.log("substitution pass-through tests ok");
+}
+
+async function runSubstitutionRewriteTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // A real tree scan inside a substitution is translated in place; its stdin filters stay.
+  await policyCase("for f in $(grep -rl X src | grep -v obj/); do echo $f; done", "translate", {
+    action: "rewrite",
+    command: "for f in $(tgrep search --index-path '/repo/.tgrep' -l X src | grep -v obj/); do echo $f; done",
+  }, IDX);
+  await policyCase("x=$(grep -rn foo src | head -1)", "translate", {
+    action: "rewrite",
+    command: "x=$(tgrep search --index-path '/repo/.tgrep' -n foo src | head -1)",
+  }, IDX);
+  await policyCase("echo `grep -rn foo src`", "translate", {
+    action: "rewrite",
+    command: "echo `tgrep search --index-path '/repo/.tgrep' -n foo src`",
+  }, IDX);
+  await policyCase("echo $(grep -rn foo src) $(rg -l bar lib)", "translate", {
+    action: "rewrite",
+    command: "echo $(tgrep search --index-path '/repo/.tgrep' -n foo src) $(tgrep search --index-path '/repo/.tgrep' -l bar lib)",
+  }, IDX);
+  // the outer grep over the substitution stays verbatim while the inner scan is translated
+  await policyCase("grep -n foo $(grep -rl bar src)", "translate", {
+    action: "rewrite",
+    command: "grep -n foo $(tgrep search --index-path '/repo/.tgrep' -l bar src)",
+  }, IDX);
+  // the substitution runs where the command runs, so a cd before it selects the index
+  const resolved = [];
+  await policyCase("cd /other && x=$(grep -rn foo src)", "translate", {
+    action: "rewrite",
+    command: "cd /other && x=$(tgrep search --index-path '/other/.tgrep' -n foo src)",
+  }, {
+    cwd: "/start",
+    resolveIndex: async (cwd) => {
+      resolved.push(cwd);
+      return `${cwd}/.tgrep`;
+    },
+  });
+  assert.deepEqual(resolved, ["/other"]);
+  // a cd inside the substitution runs in a subshell and applies to that body only
+  await policyCase("x=$(cd lib && grep -rn foo .); grep -rn bar .", "translate", {
+    action: "rewrite",
+    command: "x=$(cd lib && tgrep search --index-path '/start/lib/.tgrep' -n foo .); tgrep search --index-path '/start/.tgrep' -n bar .",
+  }, {
+    cwd: "/start",
+    resolveIndex: async (cwd) => `${cwd}/.tgrep`,
+  });
+  // an untranslatable-to-index (BRE) scan stays verbatim
+  await policyCase("x=$(grep -rn 'a\\(b\\)' src)", "translate", { action: "allow" }, IDX);
+  // an unresolved cd leaves the whole command, substitution included, verbatim
+  await policyCase('cd "$DIR" && x=$(grep -rn foo src)', "translate", { action: "allow" }, IDX);
+  console.log("substitution rewrite tests ok");
+}
+
+async function runSubstitutionBlockTests() {
+  // Only unsafe in-place rewrites block: nested backgrounding, an unsupported flag, bad quoting, escaped backticks.
+  await policyCase("x=$(grep -rn foo src &)", "translate", { action: "block" });
+  await policyCase("x=$(grep -d skip foo src)", "translate", { action: "block" });
+  await policyCase("x=$(grep -rn 'foo src)", "translate", { action: "block" });
+  await policyCase("echo `grep -rn 'a\\.b' src`", "translate", { action: "block" });
+  await policyCase("echo $(grep -rn foo src)", "block", { action: "block" });
+  await policyCase("x=$(git ls-files | grep -v obj/)", "block", { action: "block" });
   await policyCase('grep -n foo "$f"', "block", { action: "block" });
-  console.log("nested search block tests ok");
+  console.log("substitution block tests ok");
 }
 
 async function runSpecificReasonTests() {
   // Every block reason must say what triggered it, plus carry the hard-required bypass phrase.
-  const substitutionParen = await policyCase("echo $(grep foo bar)", "translate", { action: "block" });
-  assert.match(substitutionParen.reason, /command substitution/);
-  assert.match(substitutionParen.reason, /bypasses the tgrep index/);
+  const substitutionBackground = await policyCase("echo $(grep foo bar &)", "translate", { action: "block" });
+  assert.match(substitutionBackground.reason, /[Bb]ackground/);
+  assert.match(substitutionBackground.reason, /bypasses the tgrep index/);
 
-  const substitutionBacktick = await policyCase("echo `grep foo bar`", "translate", { action: "block" });
+  const substitutionBacktick = await policyCase("echo `grep foo 'a\\.b'`", "translate", { action: "block" });
   assert.match(substitutionBacktick.reason, /command substitution/);
   assert.match(substitutionBacktick.reason, /bypasses the tgrep index/);
 
@@ -326,7 +402,9 @@ async function runCdTrackingTests() {
 
 await runShellExpansionAllowTests();
 await runShellExpansionTranslateTests();
-await runNestedSearchBlockTests();
+await runSubstitutionPassThroughTests();
+await runSubstitutionRewriteTests();
+await runSubstitutionBlockTests();
 await runSpecificReasonTests();
 await runOrSeparatorTests();
 await runHeredocTests();

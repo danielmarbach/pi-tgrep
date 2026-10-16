@@ -205,8 +205,8 @@ async function runCompoundCommandTests() {
 
   // anything statically opaque or untranslatable in any part still blocks the whole command
   await policyCase("echo a && grep -d skip foo .", "translate", { action: "block" });
-  await policyCase("echo $(grep foo bar)", "translate", { action: "block" });
-  await policyCase("echo `grep foo bar`", "translate", { action: "block" });
+  await policyCase("echo $(grep foo bar &)", "translate", { action: "block" });
+  await policyCase("echo `grep -d skip foo bar`", "translate", { action: "block" });
   await policyCase("grep foo < in.txt", "translate", { action: "block" });
   await policyCase("grep foo bar &", "translate", { action: "block" });
   await policyCase("head x && grep foo y", "block", { action: "block" });
