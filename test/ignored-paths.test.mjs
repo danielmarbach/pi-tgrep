@@ -28,6 +28,12 @@ const pi = {
   },
 };
 
+const rgInstalled = await execFileP("rg", ["--version"]).then(() => true, () => false);
+if (!rgInstalled) {
+  console.log("skipping ignored-path parity test: rg is not installed");
+  process.exit(0);
+}
+
 const repoDir = await mkdtemp(path.join(tmpdir(), "pi-tgrep-ignored-"));
 const write = async (rel, text) => {
   await mkdir(path.dirname(path.join(repoDir, rel)), { recursive: true });

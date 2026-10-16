@@ -25,8 +25,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install tgrep
-        run: brew install tgrep
+      - name: Install tgrep and ripgrep
+        run: brew install tgrep ripgrep
 
       - name: Typecheck
         run: npm run typecheck
