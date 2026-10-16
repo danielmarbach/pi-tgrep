@@ -16,19 +16,38 @@ async function policyCase(command, mode, expect, context) {
 }
 
 async function runFallbackTests() {
-  // BRE-only constructs: default engine cannot express them, original grep runs verbatim
-  await policyCase("grep -rn 'a\\(b\\)\\+' src/", "translate", { action: "allow" });
-  await policyCase("grep -e 'a\\(b\\)' -r src/", "translate", { action: "allow" });
+  // BRE-only constructs are converted to ERE; back-references and unprovable patterns run verbatim
+  await policyCase("grep -rn 'a\\(b\\)\\+' src/", "translate", { action: "rewrite", command: "tgrep search -n 'a(b)+' src/" });
+  await policyCase("grep -e 'a\\(b\\)' -r src/", "translate", { action: "rewrite", command: "tgrep search -e 'a(b)' src/" });
+  await policyCase("grep -rn 'foo\\|bar' src/ --include='*.ts'", "translate", {
+    action: "rewrite",
+    command: "tgrep search --index-path '/repo/.tgrep' -n -g '*.ts' 'foo|bar' src/",
+  }, IDX);
+  await policyCase("grep -ie 'a\\|b' -e 'c\\{2\\}' src/", "translate", { action: "rewrite", command: "tgrep search -i -e 'a|b' -e 'c{2}' src/" });
+  await policyCase("grep -rn '\\<foo\\>' src/", "translate", { action: "rewrite", command: "tgrep search -n '\\bfoo\\b' src/" });
+  await policyCase("grep -rn '\\(a\\)\\1' src/", "translate", { action: "allow" });
+  await policyCase("grep -rn -e 'a\\|b' -e '\\(c\\)\\1' src/", "translate", { action: "allow" });
+  await policyCase("grep -rn 'a\\{,2\\}' src/", "translate", { action: "allow" });
+  await policyCase("grep -rn 'foo\\|' src/", "translate", { action: "allow" });
+  await policyCase("grep -rn '\\d' src/", "translate", { action: "allow" });
+  // a pattern held in a flag file is not inspected; the positionals are all paths
+  await policyCase("grep -f pats.txt 'a\\|b' src/", "translate", { action: "rewrite", command: "tgrep search -f pats.txt 'a\\|b' src/" });
+  // rg patterns are already ERE-like and are never converted
+  await policyCase("rg 'a\\|b' src/", "translate", { action: "rewrite", command: "tgrep search 'a\\|b' src/" });
+  await policyCase("grep -rnE 'a\\|b' src/", "translate", { action: "rewrite", command: "tgrep search -n 'a\\|b' src/" });
   await policyCase("grep -rE '(a)\\1' src/", "translate", { action: "allow" });
   await policyCase("egrep '(a)\\1' .", "translate", { action: "allow" });
   await policyCase("grep -rn 'a\\(b\\)\\+' src/", "block", { action: "block" });
 
   // Unescaped BRE metacharacters are literal text in real grep but regex operators in tgrep's
-  // engine, so these must also run verbatim instead of being silently mistranslated.
-  await policyCase("grep -n '^| \`list\`' README.md AGENT.md", "translate", { action: "allow" });
-  await policyCase("grep -rn 'a(b)+' src/", "translate", { action: "allow" });
-  await policyCase("grep -n 'a{2,3}' f", "translate", { action: "allow" });
-  await policyCase("grep -n 'a?' f", "translate", { action: "allow" });
+  // engine, so they are escaped instead of being silently mistranslated.
+  await policyCase("grep -n '^| \`list\`' README.md AGENT.md", "translate", {
+    action: "rewrite",
+    command: "tgrep search -n '^\\| `list`' README.md AGENT.md",
+  });
+  await policyCase("grep -rn 'a(b)+' src/", "translate", { action: "rewrite", command: "tgrep search -n 'a\\(b\\)\\+' src/" });
+  await policyCase("grep -n 'a{2,3}' f", "translate", { action: "rewrite", command: "tgrep search -n 'a\\{2,3\\}' f" });
+  await policyCase("grep -n 'a?' f", "translate", { action: "rewrite", command: "tgrep search -n 'a\\?' f" });
 
   // ERE literal escapes are valid in the default engine and translate
   await policyCase("egrep '\\(x\\)' .", "translate", {

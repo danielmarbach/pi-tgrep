@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import path from "node:path";
+import { breToEre } from "./bre.ts";
 import type { BashPolicyMode } from "./config.js";
 
 export interface PolicyContext {
@@ -227,29 +228,13 @@ const GREP_LONG_SPECS: Record<`--${string}`, GrepLongSpec> = {
   "--dereference-command-line-symlink-to-dir": { kind: "block" },
   "--exclude-directories": { kind: "block" },
 };
-const BRE_ONLY_PATTERN = /\\[(){}+?|1-9]|\\<|\\>/;
 const UNSAFE_TOKEN_PATTERN = /[\s\\|&;<>()$`*"'?[\]{}~#]/;
 const BACKREF_PATTERN = /\\[1-9]/;
 
 type GrepEngine = "fixed" | "ere" | "pcre" | "bre";
 
-/** In BRE, `(){}+?|` are literal unless backslash-escaped; tgrep's engine always treats them as
- * regex operators, so an unescaped one here would silently change meaning once translated. */
-function hasUnescapedBreMetachar(pattern: string): boolean {
-  for (let i = 0; i < pattern.length; i++) {
-    if (pattern[i] === "\\") {
-      i++;
-      continue;
-    }
-    if ("(){}+?|".includes(pattern[i]!)) return true;
-  }
-  return false;
-}
-
 function patternNeedsFallback(pattern: string, engine: GrepEngine): boolean {
-  if (engine === "fixed" || engine === "pcre") return false;
-  if (engine === "bre") return BRE_ONLY_PATTERN.test(pattern) || hasUnescapedBreMetachar(pattern);
-  return BACKREF_PATTERN.test(pattern);
+  return engine === "ere" && BACKREF_PATTERN.test(pattern);
 }
 
 interface Token {
@@ -959,6 +944,23 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
   return { tokens: out, positionals, patternFlag, patterns, engine, recursive };
 }
 
+/** Rewrites the BRE pattern tokens of a translation to ERE in place; false when one can't be converted. */
+function convertBrePatterns(translation: Translation): boolean {
+  const { tokens, positionals, patterns } = translation;
+  const slots = translation.patternFlag
+    ? tokens.filter((_, i) => tokens[i - 1]?.text === "-e")
+    : tokens.slice(tokens.length - positionals.length).slice(0, 1);
+  if (slots.length !== patterns.length || slots.some((t, i) => t.text !== patterns[i])) return false;
+  const converted = slots.map((t) => breToEre(t.text));
+  if (converted.some((text) => text === null)) return false;
+  slots.forEach((t, i) => {
+    if (converted[i] === t.text) return;
+    t.text = converted[i]!;
+    t.verbatim = false;
+  });
+  return true;
+}
+
 function emitToken(text: string, forceQuote: boolean): string {
   // An empty token must stay a token; a bare '' disappears when the parts are space-joined.
   if (text === "") return "''";
@@ -1024,6 +1026,7 @@ async function policySegment(
   if (bin !== "rg" && translation.patterns.some((p) => patternNeedsFallback(p, translation.engine))) {
     return { kind: "verbatim" };
   }
+  if (bin !== "rg" && translation.engine === "bre" && !convertBrePatterns(translation)) return { kind: "verbatim" };
   const minPositionals = translation.patternFlag ? 1 : 2;
   if (translation.positionals.length < minPositionals) return { kind: "verbatim" };
   const rendered = ["tgrep", "search"];

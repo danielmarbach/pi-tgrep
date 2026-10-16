@@ -19,6 +19,12 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ### Changed
 
+- `grep` patterns written in basic regular expression syntax are now converted and sent to
+  tgrep instead of running the original `grep` untranslated. This covers the common
+  `grep -rn 'foo\|bar' src` alternation, `\(`/`\)` groups, `\{n,m\}` intervals, `\+`/`\?` and
+  `\<`/`\>` word boundaries, and literal `( ) { } + ? |` such as `grep -n 'Project(' x.sln`.
+  Back-references and anything else that can't be converted with certainty still run the
+  original `grep`.
 - A grep inside `$(…)` or backticks is no longer blocked outright. Stdin filters
   (`X=$(git ls-files | grep -v obj/)`, `for f in $(ls | grep ts)`) and commands that merely
   mention `rg` (`X=$(which rg)`) run unchanged, and a real tree scan
@@ -37,6 +43,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   unchanged.
 - `grep -rn pattern file` now keeps the file name prefix when translated (`grep -r` prints it
   even for one file; tgrep omitted it).
+- A literal `$` or `^` in the middle of a plain `grep` pattern (`grep -rn 'costs $5' .`) and a
+  leading `*` (`grep -rn '*.ts' .`) were passed to tgrep as regex operators, so the translated
+  command matched nothing or something else. They now match literally, as in `grep`.
 
 ## [0.4.0] - 2026-10-01
 

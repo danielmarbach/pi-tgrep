@@ -85,8 +85,9 @@ async function runPolicyTests() {
   }, IDX);
   await policyCase("zgrep needle x.log", "translate", { action: "allow" });
   await policyCase("git log --grep needle", "translate", { action: "allow" });
-  // BRE-only patterns run verbatim: original grep preserves exact semantics
-  await policyCase("grep 'a\\(b\\)' f", "translate", { action: "allow" });
+  // BRE patterns are converted to the ERE tgrep speaks; back-references run verbatim
+  await policyCase("grep 'a\\(b\\)' f", "translate", { action: "rewrite", command: "tgrep search --index-path '/repo/.tgrep' 'a(b)' f" }, IDX);
+  await policyCase("grep '\\(a\\)\\1' f", "translate", { action: "allow" });
   // tgrep has no file-listing mode, so non-search invocations run verbatim
   await policyCase("rg --files", "translate", { action: "allow" }, IDX);
   await policyCase("rg --files -g '*.md'", "translate", { action: "allow" }, IDX);

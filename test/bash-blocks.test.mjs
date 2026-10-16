@@ -33,7 +33,7 @@ async function runShellExpansionTranslateTests() {
   // $ inside single quotes is a literal, not an expansion
   await policyCase("grep -rn 'literal $x in single quotes' src", "translate", {
     action: "rewrite",
-    command: "tgrep search -n 'literal $x in single quotes' src",
+    command: "tgrep search -n 'literal \\$x in single quotes' src",
   });
   console.log("shell expansion translate tests ok");
 }
@@ -103,8 +103,8 @@ async function runSubstitutionRewriteTests() {
     cwd: "/start",
     resolveIndex: async (cwd) => `${cwd}/.tgrep`,
   });
-  // an untranslatable-to-index (BRE) scan stays verbatim
-  await policyCase("x=$(grep -rn 'a\\(b\\)' src)", "translate", { action: "allow" }, IDX);
+  // a scan that can't be translated (BRE back-reference) stays verbatim
+  await policyCase("x=$(grep -rn '\\(a\\)\\1' src)", "translate", { action: "allow" }, IDX);
   // an unresolved cd leaves the whole command, substitution included, verbatim
   await policyCase('cd "$DIR" && x=$(grep -rn foo src)', "translate", { action: "allow" }, IDX);
   console.log("substitution rewrite tests ok");

@@ -29,7 +29,7 @@
   "scripts": {
     "analyze": "node scripts/analyze-pi-sessions.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test test/harness.mjs test/bash-policy-fallback.test.mjs test/bash-provenance.test.mjs test/grep-details.test.mjs test/server-lifecycle.test.mjs test/bash-emission.test.mjs test/js-guard.test.mjs test/rewrite-annotation.test.mjs test/bash-blocks.test.mjs test/ignored-paths.test.mjs"
+    "test": "node --test test/harness.mjs test/bash-policy-fallback.test.mjs test/bash-provenance.test.mjs test/grep-details.test.mjs test/server-lifecycle.test.mjs test/bash-emission.test.mjs test/js-guard.test.mjs test/rewrite-annotation.test.mjs test/bash-blocks.test.mjs test/ignored-paths.test.mjs test/bre.test.mjs test/differential.test.mjs"
   },
   "pi": {
     "extensions": [
