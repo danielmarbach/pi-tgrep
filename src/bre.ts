@@ -26,6 +26,19 @@ function bracketEnd(pattern: string, open: number): number {
   return -1;
 }
 
+/** False when an ERE pattern has a bracket expression tgrep's engine would read differently from POSIX. */
+export function ereBracketsPortable(pattern: string): boolean {
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i] === "\\") i++;
+    else if (pattern[i] === "[") {
+      const end = bracketEnd(pattern, i);
+      if (end === -1) return false;
+      i = end - 1;
+    }
+  }
+  return true;
+}
+
 /** True when the atom starting at `at` (a word character or `\w`) must match at least once. */
 function startsWithRequiredWord(pattern: string, at: number): boolean {
   let end: number;

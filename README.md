@@ -227,8 +227,9 @@ The `grep` tool also recovers from common model mistakes, adding only notices an
   Anything the converter can't prove equivalent runs the original command instead: back-references
   (`\1`), `\<`/`\>` that don't sit next to a required word character, stacked quantifiers,
   empty alternatives (`a\|`), brackets containing `\`, unknown escapes such as `\d`.
-  `-E`/`egrep` need no flag; `-F`/`fgrep` maps to `-F`; `-P`/`--perl-regexp` maps to tgrep's
-  `-P` (PCRE2).
+  `-E`/`egrep` need no flag and pass the pattern as written, except that a bracket expression
+  containing `\` (`[a-z\-]`), which POSIX reads literally and tgrep as an escape, runs the original;
+  `-F`/`fgrep` maps to `-F`; `-P`/`--perl-regexp` maps to tgrep's `-P` (PCRE2).
 - During a from-scratch index build the tgrep server answers from an empty index, so searches
   temporarily use ripgrep until `Indexing: complete`, favoring correctness over speed.
 

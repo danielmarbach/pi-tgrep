@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { breToEre } from "./bre.ts";
+import { breToEre, ereBracketsPortable } from "./bre.ts";
 import type { BashPolicyMode } from "./config.js";
 
 export interface PolicyContext {
@@ -235,7 +235,7 @@ const BACKREF_PATTERN = /\\[1-9]/;
 type GrepEngine = "fixed" | "ere" | "pcre" | "bre";
 
 function patternNeedsFallback(pattern: string, engine: GrepEngine): boolean {
-  return engine === "ere" && BACKREF_PATTERN.test(pattern);
+  return engine === "ere" && (BACKREF_PATTERN.test(pattern) || !ereBracketsPortable(pattern));
 }
 
 interface Token {

@@ -511,6 +511,22 @@ async function runReviewRegressionTests() {
   console.log("review regression tests ok");
 }
 
+async function runEreBracketTests() {
+  // A backslash inside an ERE bracket is literal in POSIX grep but an escape in tgrep, so these run as written.
+  for (const command of [
+    "grep -rn --include=*.cs -E '\"[A-Za-z0-9_.\\-]+\"' .",
+    'grep -rn --include=*.cs -E "SetEnvironmentVariable|static [A-Za-z<>\\[\\]]+ \\w+ *(=|;|\\{)" AcceptanceTests',
+    "egrep -n '[a-z\\-]bar' src/a.ts",
+  ]) {
+    await policyCase(command, "translate", { action: "allow" });
+  }
+  await policyCase("grep -rnE '\\[Ignore\\]|[a-z]+' src", "translate", {
+    action: "rewrite",
+    command: "tgrep search -n '\\[Ignore\\]|[a-z]+' src",
+  });
+  console.log("ERE bracket tests ok");
+}
+
 async function runKeywordPrefixTests() {
   const IDX = { indexPath: "/repo/.tgrep" };
   // A grep after a shell keyword on the same line is still a grep.
@@ -669,4 +685,5 @@ await runCdTrackingTests();
 await runTildeTests();
 await runReviewRegressionTests();
 await runKeywordPrefixTests();
+await runEreBracketTests();
 console.log("ALL BLOCK TESTS PASSED");

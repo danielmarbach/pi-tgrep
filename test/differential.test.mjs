@@ -272,6 +272,10 @@ BATTERY.push(
 );
 for (const pattern of BRE_CONVERTIBLE) BATTERY.push({ cmd: `grep -rn '${pattern}' src --include='*.cs'` });
 for (const pattern of BRE_UNCONVERTIBLE) BATTERY.push({ cmd: `grep -rn '${pattern}' src --include='*.cs'`, verbatim: true });
+// POSIX reads a backslash inside an ERE bracket literally, tgrep's engine reads it as an escape.
+for (const pattern of ['"[A-Za-z0-9_.\\-]+"', "static [A-Za-z<>\\[\\]]+ ", "[a-z\\-]bar"]) {
+  BATTERY.push({ cmd: `grep -rnE '${pattern}' src --include='*.cs'`, verbatim: true });
+}
 
 function which(bin) {
   const found = spawnSync("which", [bin], { encoding: "utf8" });

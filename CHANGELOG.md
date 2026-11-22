@@ -39,6 +39,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   through a helper (`run(cmd)`) are no longer blocked wholesale: only a script containing a grep
   that would bypass the index is blocked, so harmless uses such as `… | grep -v x` or "grep" in a
   prompt run as written.
+- `grep -E`/`egrep` patterns with a backslash inside a bracket expression (`[A-Za-z0-9_.\-]`,
+  `[<>\[\]]`) now run unchanged instead of being translated: real grep reads that backslash
+  literally while tgrep read it as an escape, so the translation matched different lines.
 
 ## [0.5.0] - 2026-10-16
 
