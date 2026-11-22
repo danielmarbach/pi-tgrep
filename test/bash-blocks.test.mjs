@@ -113,6 +113,71 @@ async function runSubstitutionRewriteTests() {
   console.log("substitution rewrite tests ok");
 }
 
+async function runDoubleQuotedSubstitutionTests() {
+  // Inside double quotes a $(…) or backtick body has its own quoting, so a " in it doesn't end the string.
+  await policyCase(
+    `find . -name "*.manifest" | while read f; do echo "$f :: $(grep -E '"(Name|TypeName)"' "$f" | head -3 | tr '\\n' ' ')"; done`,
+    "translate",
+    { action: "allow" },
+  );
+  await policyCase('for p in A B; do echo "$p: $(grep -h -E "<TargetFramework|<UseWPF" $p/*.csproj | tr -d " ")"; done', "translate", {
+    action: "allow",
+  });
+  await policyCase('echo "count: $(grep -c foo src/a.ts)"', "translate", {
+    action: "rewrite",
+    command: 'echo "count: $(tgrep search -c foo src/a.ts)"',
+  });
+  await policyCase('echo "first: `grep -rl foo src | head -1`"', "translate", {
+    action: "rewrite",
+    command: 'echo "first: `tgrep search -l foo src | head -1`"',
+  });
+  await policyCase('echo "x $(echo "a|b" | grep -c a)"', "translate", { action: "allow" });
+  console.log("double-quoted substitution tests ok");
+}
+
+async function runSubstitutionWordTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // git grep is never translated, so a substitution around it must not be re-tokenized into a grep part.
+  await policyCase(
+    'cd /repo && A=$(git grep -l "class FailedAuditImportIndex" -- src); P=$(git grep -l "class CustomChecksIndex" -- src); echo "$A"; echo "$P"; cat "$A"; cat "$P"',
+    "translate",
+    { action: "allow" },
+    IDX,
+  );
+  await policyCase("f=$(git grep -l x -- src | head -1)", "translate", { action: "allow" }, IDX);
+  await policyCase("f=`git grep -l x -- src`", "translate", { action: "allow" }, IDX);
+  await policyCase('f="$(git grep -l "a b" -- src)"', "translate", { action: "allow" }, IDX);
+  await policyCase("f=${X:-git grep -l x}", "translate", { action: "allow" }, IDX);
+  // an inner tree scan is still rewritten in place with the assignment intact
+  await policyCase("x=$(command grep -rl foo src | head -1)", "translate", {
+    action: "rewrite",
+    command: "x=$(command tgrep search --index-path '/repo/.tgrep' -l foo src | head -1)",
+  }, IDX);
+  await policyCase("p=$(command grep -oE 'skills/sandbox[^ ]* +[^ ]+' template/Dockerfile | head -1 | awk '{print $2}')", "translate", {
+    action: "rewrite",
+    command:
+      "p=$(command tgrep search --index-path '/repo/.tgrep' -o 'skills/sandbox[^ ]* +[^ ]+' template/Dockerfile | head -1 | awk '{print $2}')",
+  }, IDX);
+  // an assignment prefix holding a substitution keeps working for the grep that follows it
+  await policyCase('FOO="$(echo a b)" grep -rn foo src', "translate", {
+    action: "rewrite",
+    command: "FOO=$(echo a b) tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("FOO=$(echo a b) grep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "FOO=$(echo a b) tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  await policyCase("FOO=${X:-a b} grep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "FOO=${X:-a b} tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // a redirect inside the substitution does not cut the word short
+  await policyCase("x=$(git grep -l y 2>/dev/null | head -1) && echo $x", "translate", { action: "allow" }, IDX);
+  // an unterminated expansion is unparseable, like unbalanced quotes
+  await policyCase("FOO=${X:-a grep -rn foo src", "translate", { action: "block" }, IDX);
+  console.log("substitution word tests ok");
+}
+
 async function runSubstitutionBlockTests() {
   // Only unsafe in-place rewrites block: nested backgrounding, an unsupported flag, bad quoting, escaped backticks.
   await policyCase("x=$(grep -rn foo src &)", "translate", { action: "block" });
@@ -550,6 +615,8 @@ await runShellExpansionAllowTests();
 await runShellExpansionTranslateTests();
 await runSubstitutionPassThroughTests();
 await runSubstitutionRewriteTests();
+await runSubstitutionWordTests();
+await runDoubleQuotedSubstitutionTests();
 await runSubstitutionBlockTests();
 await runSpecificReasonTests();
 await runOrSeparatorTests();

@@ -97,7 +97,8 @@ path into the fast one and closes the side doors.
      (`$(which rg)`) run unchanged, a tree scan (`$(grep -rl X src | grep -v obj/)`) is
      translated in place or, when it can't be, left as written; it is blocked only when an
      in-place rewrite is unsafe (a backgrounded grep or an unsupported flag inside it,
-     unparseable quoting, or a backtick body with backslash escapes);
+     unparseable quoting, or a backtick body with backslash escapes); a substitution or `${…}`
+     counts as one word, so `A=$(git grep -l X -- src)` is never mistaken for a `grep` command;
    - a grep that is itself backgrounded with `&` (`grep … &`, `a && grep … &`; one inside a
      backgrounded loop or group is translated) and a grep with a stdin redirect (`<`) are
      blocked, while the same constructs on other commands are left alone;

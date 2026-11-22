@@ -324,10 +324,28 @@ function tokenizeDetailed(command: string): Token[] | null {
           quoted = true;
         }
       } else {
+        const sub = consumeExpansion(command, i);
+        if (sub === null) return null;
+        if (sub) {
+          current += command.slice(i, sub.end);
+          quoted = true;
+          expansion = true;
+          i = sub.end - 1;
+          continue;
+        }
         if ((c === "$" && EXPANSION_NEXT.test(command[i + 1] ?? "")) || c === "`") expansion = true;
         current += c;
         quoted = true;
       }
+      continue;
+    }
+    const sub = consumeExpansion(command, i);
+    if (sub === null) return null;
+    if (sub) {
+      current += command.slice(i, sub.end);
+      has = true;
+      expansion = true;
+      i = sub.end - 1;
       continue;
     }
     if (c === "$" && command[i + 1] === "'") {
@@ -515,6 +533,45 @@ function consumeBacktickSubstitution(command: string, backtick: number): { end: 
   return null;
 }
 
+/** Consumes a `${ … }` parameter expansion starting at the index of its opening `{`. */
+function consumeBraceExpansion(command: string, openBrace: number): { end: number; body: string } | null {
+  let i = openBrace + 1;
+  let depth = 1;
+  while (i < command.length) {
+    const c = command[i]!;
+    if (c === "\\") {
+      i += 2;
+    } else if (c === "'") {
+      const close = command.indexOf("'", i + 1);
+      if (close === -1) return null;
+      i = close + 1;
+    } else if (c === '"') {
+      i++;
+      while (i < command.length && command[i] !== '"') i += command[i] === "\\" ? 2 : 1;
+      i++;
+    } else if (c === "$" && command[i + 1] === "(") {
+      const sub = consumeParenSubstitution(command, i + 1);
+      if (!sub) return null;
+      i = sub.end;
+    } else {
+      i++;
+      if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) return { end: i, body: command.slice(openBrace + 1, i - 1) };
+    }
+  }
+  return null;
+}
+
+/** The `$(…)`, `${…}` or backtick expansion starting at `i`: undefined if none starts there, null if unterminated. */
+function consumeExpansion(text: string, i: number): { end: number; body: string } | null | undefined {
+  const c = text[i];
+  const next = text[i + 1];
+  if (c === "`") return consumeBacktickSubstitution(text, i);
+  if (c === "$" && next === "(") return consumeParenSubstitution(text, i + 1);
+  if (c === "$" && next === "{") return consumeBraceExpansion(text, i + 1);
+  return undefined;
+}
+
 function scanPipeline(command: string): ScanResult {
   const parts: string[] = [];
   const separators: string[] = [];
@@ -555,6 +612,16 @@ function scanPipeline(command: string): ScanResult {
         if (next === undefined) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
         current += c + next;
         i += 2;
+        continue;
+      }
+      // A substitution inside double quotes has its own quoting, so its " doesn't end the string.
+      if ((c === "$" && command[i + 1] === "(") || c === "`") {
+        const backtick = c === "`";
+        const sub = backtick ? consumeBacktickSubstitution(command, i) : consumeParenSubstitution(command, i + 1);
+        if (!sub) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+        currentSubstitutions.push({ offset: current.length + (backtick ? 1 : 2), body: sub.body, backtick });
+        current += command.slice(i, sub.end);
+        i = sub.end;
         continue;
       }
       current += c;
@@ -719,7 +786,12 @@ function splitRedirect(segment: string): { cmd: string; suffix: string } {
       i = end - 1;
     } else if (c === "'") inSingle = true;
     else if (c === '"') inDouble = true;
-    else if (c === "#" && (i === 0 || /\s/.test(segment[i - 1]!))) {
+    else if (consumeExpansion(segment, i) !== undefined) {
+      // A > inside a substitution belongs to it, not to this command.
+      const sub = consumeExpansion(segment, i);
+      if (!sub) break;
+      i = sub.end - 1;
+    } else if (c === "#" && (i === 0 || /\s/.test(segment[i - 1]!))) {
       // A comment runs to the end of the segment; a > inside it is not a redirect.
       return { cmd: segment.slice(0, i), suffix: segment.slice(i) };
     } else if (c === ">") {
