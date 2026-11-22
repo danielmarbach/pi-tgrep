@@ -944,6 +944,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
   const ePatterns: string[] = [];
   let patternFlag = false;
   let recursive = false;
+  let counting = false;
   let engine: GrepEngine = bin === "egrep" ? "ere" : bin === "fgrep" ? "fixed" : "bre";
   if (bin === "fgrep") out.push({ text: "-F" });
   let i = 0;
@@ -964,6 +965,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
         case "drop":
           if (spec.engine) engine = spec.engine;
           if (name === "--recursive" || name === "--dereference-recursive") recursive = true;
+          if (name === "--count") counting = true;
           if (spec.kind === "emit") out.push({ text: spec.to });
           break;
         case "arg": {
@@ -1006,6 +1008,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
           const spec = GREP_SHORT_SPECS[ch];
           if (!spec) return null;
           if (ch === "r" || ch === "R") recursive = true;
+          if (ch === "c") counting = true;
           if (spec.kind !== "arg" && spec.engine) engine = spec.engine;
           return spec.kind === "emit" ? spec.to : "";
         },
@@ -1031,6 +1034,8 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
     }
     i++;
   }
+  // grep -c prints 0 for files without a match; tgrep omits them unless asked.
+  if (counting) out.push({ text: "--include-zero" });
   const positionals = positionalTokens.map((p) => ({ text: p.text, quoted: p.quoted }));
   const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!.text] : [];
   for (const p of positionalTokens) out.push(passThrough(p));

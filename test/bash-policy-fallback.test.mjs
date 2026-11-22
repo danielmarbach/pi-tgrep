@@ -91,7 +91,7 @@ async function runFallbackTests() {
   const noIndex = await applyBashPolicy("grep -rn foo src/", "translate");
   assert.deepEqual(noIndex, { action: "rewrite", command: "tgrep search -n foo src/" });
   const noIndexCompound = await applyBashPolicy("head -60 x.txt && grep -c foo y.txt", "translate");
-  assert.deepEqual(noIndexCompound, { action: "rewrite", command: "head -60 x.txt && tgrep search -c foo y.txt" });
+  assert.deepEqual(noIndexCompound, { action: "rewrite", command: "head -60 x.txt && tgrep search -c --include-zero foo y.txt" });
 
   // index-path injection must be -e/-f aware: positionals are all paths when the pattern comes from a flag
   const noInjectE = await policyCase("grep -e foo -r /abs/path rel", "translate", {
@@ -188,7 +188,7 @@ async function runCompoundCommandTests() {
   // ; and && split compounds like | splits pipelines: non-search parts stay verbatim
   await policyCase("head -60 x.txt && grep -c foo y.txt", "translate", {
     action: "rewrite",
-    command: "head -60 x.txt && tgrep search --index-path '/repo/.tgrep' -c foo y.txt",
+    command: "head -60 x.txt && tgrep search --index-path '/repo/.tgrep' -c --include-zero foo y.txt",
   }, IDX);
   await policyCase("echo hi; grep foo bar", "translate", {
     action: "rewrite",

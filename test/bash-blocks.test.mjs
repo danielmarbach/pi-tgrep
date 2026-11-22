@@ -125,7 +125,7 @@ async function runDoubleQuotedSubstitutionTests() {
   });
   await policyCase('echo "count: $(grep -c foo src/a.ts)"', "translate", {
     action: "rewrite",
-    command: 'echo "count: $(tgrep search -c foo src/a.ts)"',
+    command: 'echo "count: $(tgrep search -c --include-zero foo src/a.ts)"',
   });
   await policyCase('echo "first: `grep -rl foo src | head -1`"', "translate", {
     action: "rewrite",

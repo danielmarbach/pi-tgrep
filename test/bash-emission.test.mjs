@@ -21,9 +21,22 @@ async function policyCase(command, mode, expect, context) {
 
 async function runEmptyPatternTests() {
   // An empty positional must survive as its own token, not vanish into a double space.
-  await policyCase('grep -c "" f', "translate", { action: "rewrite", command: "tgrep search -c '' f" });
-  await policyCase("grep -c '' f", "translate", { action: "rewrite", command: "tgrep search -c '' f" });
+  await policyCase('grep -c "" f', "translate", { action: "rewrite", command: "tgrep search -c --include-zero '' f" });
+  await policyCase("grep -c '' f", "translate", { action: "rewrite", command: "tgrep search -c --include-zero '' f" });
   console.log("empty pattern emission tests ok");
+}
+
+async function runCountEmissionTests() {
+  // grep -c prints 0 for files without a match; tgrep only does with --include-zero. rg -c omits them too.
+  const rewrite = (command) => ({ action: "rewrite", command });
+  await policyCase("grep -c needle f", "translate", rewrite("tgrep search -c --include-zero needle f"));
+  await policyCase("grep --count needle f", "translate", rewrite("tgrep search -c --include-zero needle f"));
+  await policyCase("egrep -c 'a|b' f g", "translate", rewrite("tgrep search -c --include-zero 'a|b' f g"));
+  await policyCase("fgrep -c a.b f", "translate", rewrite("tgrep search -F -c --include-zero a.b f"));
+  await policyCase("grep -rnc needle src", "translate", rewrite("tgrep search -n -c --include-zero needle src"));
+  await policyCase("grep -n needle f", "translate", rewrite("tgrep search -n needle f"));
+  await policyCase("rg -c needle f", "translate", rewrite("tgrep search -c needle f"));
+  console.log("count emission tests ok");
 }
 
 async function runUnquotedGlobTests() {
@@ -100,6 +113,7 @@ async function runShellGlobExpansionExecTest() {
 }
 
 await runEmptyPatternTests();
+await runCountEmissionTests();
 await runUnquotedGlobTests();
 await runQuotedTokensStayQuotedTests();
 await runShellGlobExpansionExecTest();

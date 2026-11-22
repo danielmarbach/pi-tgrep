@@ -44,6 +44,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   literally while tgrep read it as an escape, so the translation matched different lines.
 - `grep -r pattern dir/*.csproj` keeps the `file:` prefix on every match when the glob expands to
   a single file, as real `grep -r` prints it.
+- A translated `grep -c` now prints a `0` count for files without a match, as grep does, instead
+  of omitting them (`grep -c foo file.ts` printed nothing when `foo` was absent).
 
 ## [0.5.0] - 2026-10-16
 
