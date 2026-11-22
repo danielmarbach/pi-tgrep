@@ -24,6 +24,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - A grep that filters a pipe (`git ls-files -z | grep -zv Tests/ | xargs …`) is no longer blocked
   when it uses a flag tgrep can't translate; it runs unchanged. Greps that scan files still block
   on such flags.
+- A grep that reads a process substitution (`grep -c x <(cmd)`, `diff <(…) <(…)`) is no longer
+  blocked as a `<` stdin redirect; it runs unchanged, and a tree scan inside `<(…)` / `>(…)` is
+  translated in place.
 - `A=$(git grep -l X -- src)` and other assignments or words that wrap a command substitution,
   backticks or `${…}` are no longer rewritten into `A=$(git tgrep search …)`, which failed with
   `git: 'tgrep' is not a git command`. A `$(…)` inside double quotes

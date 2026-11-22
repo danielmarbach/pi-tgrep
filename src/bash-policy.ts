@@ -324,7 +324,7 @@ function tokenizeDetailed(command: string): Token[] | null {
           quoted = true;
         }
       } else {
-        const sub = consumeExpansion(command, i);
+        const sub = consumeExpansion(command, i, false);
         if (sub === null) return null;
         if (sub) {
           current += command.slice(i, sub.end);
@@ -339,7 +339,7 @@ function tokenizeDetailed(command: string): Token[] | null {
       }
       continue;
     }
-    const sub = consumeExpansion(command, i);
+    const sub = consumeExpansion(command, i, true);
     if (sub === null) return null;
     if (sub) {
       current += command.slice(i, sub.end);
@@ -400,7 +400,7 @@ interface ScannedCommand {
   blocks: (string | undefined)[];
   /** Heredoc bodies (terminator included); separators carry an opaque marker in their place. */
   heredocs: string[];
-  /** substitutions[i]: the `$(…)` / backtick bodies inside parts[i], in source order. */
+  /** substitutions[i]: the `$(…)` / backtick / `<(…)` / `>(…)` bodies inside parts[i], in source order. */
   substitutions: Substitution[][];
 }
 
@@ -562,13 +562,19 @@ function consumeBraceExpansion(command: string, openBrace: number): { end: numbe
   return null;
 }
 
-/** The `$(…)`, `${…}` or backtick expansion starting at `i`: undefined if none starts there, null if unterminated. */
-function consumeExpansion(text: string, i: number): { end: number; body: string } | null | undefined {
+/** The `$(…)`, `${…}`, backtick or (unquoted only) `<(…)` / `>(…)` expansion starting at `i`:
+ * undefined if none starts there, null if it is unterminated. */
+function consumeExpansion(
+  text: string,
+  i: number,
+  allowProcessSubstitution: boolean,
+): { end: number; body: string } | null | undefined {
   const c = text[i];
   const next = text[i + 1];
   if (c === "`") return consumeBacktickSubstitution(text, i);
   if (c === "$" && next === "(") return consumeParenSubstitution(text, i + 1);
   if (c === "$" && next === "{") return consumeBraceExpansion(text, i + 1);
+  if (allowProcessSubstitution && (c === "<" || c === ">") && next === "(") return consumeParenSubstitution(text, i + 1);
   return undefined;
 }
 
@@ -703,6 +709,14 @@ function scanPipeline(command: string): ScanResult {
       i++;
       continue;
     }
+    if ((c === "<" || c === ">") && command[i + 1] === "(") {
+      const sub = consumeParenSubstitution(command, i + 1);
+      if (!sub) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+      currentSubstitutions.push({ offset: current.length + 2, body: sub.body, backtick: false });
+      current += command.slice(i, sub.end);
+      i = sub.end;
+      continue;
+    }
     if (c === "<") {
       if (command[i + 1] !== "<") {
         currentBlock ??= STDIN_REDIRECT_BLOCK_REASON;
@@ -786,9 +800,9 @@ function splitRedirect(segment: string): { cmd: string; suffix: string } {
       i = end - 1;
     } else if (c === "'") inSingle = true;
     else if (c === '"') inDouble = true;
-    else if (consumeExpansion(segment, i) !== undefined) {
+    else if (consumeExpansion(segment, i, true) !== undefined) {
       // A > inside a substitution belongs to it, not to this command.
-      const sub = consumeExpansion(segment, i);
+      const sub = consumeExpansion(segment, i, true);
       if (!sub) break;
       i = sub.end - 1;
     } else if (c === "#" && (i === 0 || /\s/.test(segment[i - 1]!))) {
@@ -1191,7 +1205,7 @@ function trailingSpace(text: string): string {
   return text.slice(text.trimEnd().length);
 }
 
-/** Runs the policy over each `$(…)` / backtick body in `part`, rewriting a translatable search in place. */
+/** Runs the policy over each `$(…)` / backtick / process substitution body in `part`, rewriting a translatable search in place. */
 async function applySubstitutionPolicy(
   part: string,
   substitutions: Substitution[],

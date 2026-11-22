@@ -92,15 +92,18 @@ path into the fast one and closes the side doors.
    - grep whose operands contain a shell expansion (`"$f"`, `$FILES`, `$(find …)`, backticks)
      greps a dynamic list the index can't help with, so it runs unchanged, as does a command
      follows a `cd` with a dynamic target (until the next absolute `cd`);
-   - the body of `$(…)` or backticks is judged like any other command, in the directory it runs
-     in: stdin filters (`$(git ls-files | grep -v obj/)`) and other binaries
+   - the body of `$(…)`, backticks or a process substitution `<(…)` / `>(…)` is judged like any
+     other command, in the directory it runs in: stdin filters
+     (`$(git ls-files | grep -v obj/)`) and other binaries
      (`$(which rg)`) run unchanged, a tree scan (`$(grep -rl X src | grep -v obj/)`) is
      translated in place or, when it can't be, left as written; it is blocked only when an
      in-place rewrite is unsafe (a backgrounded grep or an unsupported flag inside it,
      unparseable quoting, or a backtick body with backslash escapes); a substitution or `${…}`
-     counts as one word, so `A=$(git grep -l X -- src)` is never mistaken for a `grep` command;
+     counts as one word, so `A=$(git grep -l X -- src)` is never mistaken for a `grep` command,
+     and a grep whose operand is a process substitution (`grep -c x <(cmd)`) reads a pipe, so it
+     runs unchanged;
    - a grep that is itself backgrounded with `&` (`grep … &`, `a && grep … &`; one inside a
-     backgrounded loop or group is translated) and a grep with a stdin redirect (`<`) are
+     backgrounded loop or group is translated) and a grep with a stdin redirect (`<`, `< <(…)`) are
      blocked, while the same constructs on other commands are left alone;
    - every block reason names what triggered it (the construct, or the unsupported flag) and
      keeps the phrase "bypasses the tgrep index" so `npm run analyze` can count blocks;

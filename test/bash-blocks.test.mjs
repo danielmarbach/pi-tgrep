@@ -178,6 +178,46 @@ async function runSubstitutionWordTests() {
   console.log("substitution word tests ok");
 }
 
+async function runProcessSubstitutionTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // a grep reading a process substitution reads a pipe, which tgrep can't serve: it runs unchanged
+  const unchanged = [
+    'cd /tmp/roslynprobe && grep -n "suppressor: count\\|pragma: count\\|pragma" <(dotnet run 2>&1 | grep -v warning) | head -5',
+    'diff <(git diff -U0 -- a.cs | grep -E "^[+-]" | grep -v "^+++\\|^---") <(git diff -U0 -- b.cs | grep -E "^[+-]" | grep -v "^+++\\|^---")',
+    'gh pr view 7723 --json body --jq .body | grep -in "v12\\|AppContext\\|remov"; grep -rn "rolling" <(gh pr view 7825 --json body --jq .body) | head',
+    'grep -c "LearningTransport" <(ilspycmd lib/net10.0/NServiceBus.Core.dll 2>/dev/null) 2>/dev/null || echo "checking differently"',
+    "grep -c x <(cmd)",
+    "grep -c x <(cmd a b) <(cmd2)",
+    "cat > >(grep -v x)",
+    "tee >(grep -v x) > out.txt",
+  ];
+  for (const command of unchanged) {
+    await policyCase(command, "translate", { action: "allow" }, IDX);
+  }
+  // a tree scan inside a process substitution is translated in place
+  await policyCase("while read f; do echo $f; done < <(grep -rl foo src)", "translate", {
+    action: "rewrite",
+    command: "while read f; do echo $f; done < <(tgrep search --index-path '/repo/.tgrep' -l foo src)",
+  }, IDX);
+  await policyCase("diff <(grep -rn a src) <(grep -rn b src)", "translate", {
+    action: "rewrite",
+    command:
+      "diff <(tgrep search --index-path '/repo/.tgrep' -n a src) <(tgrep search --index-path '/repo/.tgrep' -n b src)",
+  }, IDX);
+  await policyCase("grep -c x <(grep -rl foo src | head -2)", "translate", {
+    action: "rewrite",
+    command: "grep -c x <(tgrep search --index-path '/repo/.tgrep' -l foo src | head -2)",
+  }, IDX);
+  // a plain stdin redirect still blocks a grep; `< <(…)` blocks only when the redirected command is a grep
+  await policyCase("grep foo < file.txt", "translate", { action: "block" }, IDX);
+  await policyCase("grep foo < <(cmd)", "translate", { action: "block" }, IDX);
+  await policyCase("grep foo < file.txt | head -1", "translate", { action: "block" }, IDX);
+  await policyCase("cat < <(echo a b)", "translate", { action: "allow" }, IDX);
+  // an unterminated process substitution is unparseable
+  await policyCase("grep -c x <(cmd", "translate", { action: "block" }, IDX);
+  console.log("process substitution tests ok");
+}
+
 async function runSubstitutionBlockTests() {
   // Only unsafe in-place rewrites block: nested backgrounding, an unsupported flag, bad quoting, escaped backticks.
   await policyCase("x=$(grep -rn foo src &)", "translate", { action: "block" });
@@ -617,6 +657,7 @@ await runSubstitutionPassThroughTests();
 await runSubstitutionRewriteTests();
 await runSubstitutionWordTests();
 await runDoubleQuotedSubstitutionTests();
+await runProcessSubstitutionTests();
 await runSubstitutionBlockTests();
 await runSpecificReasonTests();
 await runOrSeparatorTests();
