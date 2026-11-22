@@ -236,6 +236,70 @@ async function runPipeFedGrepTests() {
   console.log("pipe-fed grep tests ok");
 }
 
+async function runImplicitPathTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  const prefix = "tgrep search --index-path '/repo/.tgrep'";
+  // rg without a path searches the working directory; tgrep search does too.
+  await policyCase('rg -l "FromAmqpMessage" --type cs', "translate", {
+    action: "rewrite",
+    command: `${prefix} -l FromAmqpMessage --type cs`,
+  }, IDX);
+  await policyCase(
+    `rg -n "200000|200_000" --glob '!**/bin/**' --glob '!**/obj/**' --glob '!**/node_modules/**'`,
+    "translate",
+    {
+      action: "rewrite",
+      command: `${prefix} -n '200000|200_000' --glob '!**/bin/**' --glob '!**/obj/**' --glob '!**/node_modules/**'`,
+    },
+    IDX,
+  );
+  await policyCase("rg -n -e foo -e bar", "translate", {
+    action: "rewrite",
+    command: `${prefix} -n -e foo -e bar`,
+  }, IDX);
+  // Recursive grep without a path searches `.`; the `.` keeps grep's ./ output prefix.
+  await policyCase('grep -rn "encodingsByCode" --include="*.cs"', "translate", {
+    action: "rewrite",
+    command: `${prefix} -n -g '*.cs' encodingsByCode .`,
+  }, IDX);
+  await policyCase('grep -rn "ImplementsInterfaceMember" --include="*.cs" -l', "translate", {
+    action: "rewrite",
+    command: `${prefix} -n -g '*.cs' -l ImplementsInterfaceMember .`,
+  }, IDX);
+  await policyCase("grep -R foo", "translate", { action: "rewrite", command: `${prefix} foo .` }, IDX);
+  await policyCase("egrep --recursive 'a|b'", "translate", {
+    action: "rewrite",
+    command: `${prefix} 'a|b' .`,
+  }, IDX);
+  await policyCase("cd /other && rg foo", "translate", {
+    action: "rewrite",
+    command: "cd /other && tgrep search --index-path '/repo/.tgrep' foo",
+  }, IDX);
+  // The implicit working-directory path goes through the ignored-path check as `.`.
+  const checked = [];
+  await policyCase("rg foo", "translate", {
+    action: "rewrite",
+    command: `${prefix} --no-ignore-parent foo`,
+  }, { ...IDX, cwd: "/repo/build", isIgnored: async (cwd, operand) => (checked.push([cwd, operand]), true) });
+  assert.deepEqual(checked, [["/repo/build", "."]]);
+  // Still unchanged: pipe-fed, heredoc-fed, or a non-recursive grep (which reads stdin).
+  for (const command of [
+    "git ls-files | rg foo",
+    "git ls-files | grep -r foo",
+    "git ls-files | grep -rn foo",
+    "grep foo",
+    "grep -n foo",
+    "rg foo <<< bar",
+    "grep -r foo <<< bar",
+    "rg foo <<EOF\nbar\nEOF",
+  ]) {
+    await policyCase(command, "translate", { action: "allow" }, IDX);
+  }
+  // Not pipe-fed with an unsupported flag still blocks.
+  await policyCase("grep -rz foo", "translate", { action: "block" }, IDX);
+  console.log("implicit path tests ok");
+}
+
 async function runMultiLineTests() {
   const IDX = { indexPath: "/repo/.tgrep" };
   // A newline separates commands like ; does, so a grep on its own line is translated.
@@ -491,6 +555,7 @@ await runSpecificReasonTests();
 await runOrSeparatorTests();
 await runHeredocTests();
 await runPipeFedGrepTests();
+await runImplicitPathTests();
 await runMultiLineTests();
 await runCdTrackingTests();
 await runTildeTests();

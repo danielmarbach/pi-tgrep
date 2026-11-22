@@ -1043,11 +1043,17 @@ async function policySegment(
     return { kind: "verbatim" };
   }
   if (bin !== "rg" && translation.engine === "bre" && !convertBrePatterns(translation)) return { kind: "verbatim" };
-  const minPositionals = translation.patternFlag ? 1 : 2;
-  if (translation.positionals.length < minPositionals) return { kind: "verbatim" };
+  const hasPattern = translation.patternFlag || translation.positionals.length > 0;
+  const operands = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
+  if (!hasPattern) return { kind: "verbatim" };
+  if (operands.length === 0) {
+    // Without a path, rg and grep -r search the working directory; any other grep reads stdin.
+    if (pipeFed || (bin !== "rg" && !translation.recursive)) return { kind: "verbatim" };
+    // grep -r prints ./ before each file name, as tgrep does for an explicit `.`.
+    if (bin !== "rg") translation.tokens.push({ text: "." });
+  }
   const rendered = ["tgrep", "search"];
   const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
-  const operands = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
   const paths = operands.map((p) => p.text);
   const resolvedPaths = operands.map(expandLeadingTilde);
   if (
@@ -1063,7 +1069,9 @@ async function policySegment(
   if (indexPath && !hasIndexPath && allPathsRelative) {
     rendered.push("--index-path", emitToken(indexPath, true));
   }
-  if (isIgnored && (await anyIgnored(resolvedPaths, isIgnored))) rendered.push("--no-ignore-parent");
+  if (isIgnored && (await anyIgnored(resolvedPaths.length > 0 ? resolvedPaths : ["."], isIgnored))) {
+    rendered.push("--no-ignore-parent");
+  }
   rendered.push(...translation.tokens.map((t) => renderOutToken(t)));
   const cmdText = [...prefixes, ...rendered].join(" ");
   return { kind: "rewrite", text: suffix ? `${cmdText} ${suffix.trim()}` : cmdText };

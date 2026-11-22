@@ -116,9 +116,9 @@ async function runFallbackTests() {
     action: "rewrite",
     command: "tgrep search --index-path '/repo/.tgrep' -e foo rel",
   }, IDX);
-  // pattern from a flag with no positional path means stdin/no-path: never rewritten
+  // pattern from a flag with no positional path: grep reads stdin, rg searches the working directory
   await policyCase("grep -e foo", "translate", { action: "allow" });
-  await policyCase("rg -f pats.txt", "translate", { action: "allow" });
+  await policyCase("rg -f pats.txt", "translate", { action: "rewrite", command: "tgrep search -f pats.txt" });
   const noInjectF = await policyCase("grep -f pats.txt /abs rel", "translate", {
     action: "rewrite",
     command: "tgrep search -f pats.txt /abs rel",

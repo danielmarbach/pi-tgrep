@@ -147,6 +147,15 @@ const BATTERY = [
   { cmd: "grep -rn needle ~/build.log" },
   { cmd: "cd ~/src && grep -rn needle app.ts" },
   { cmd: "cd ~ && grep -rn needle src" },
+  // No path operand: rg and grep -r search the working directory.
+  { cmd: "rg -n needle" },
+  { cmd: "rg -l needle -g '*.ts'" },
+  { cmd: "grep -rn --include='*.ts' needle" },
+  { cmd: "grep -rl needle --include=*.md" },
+  {
+    cmd: "grep -rl needle --include=*.txt",
+    known: "grep does not read .gitignore; tgrep skips ignored files (by design)",
+  },
 ];
 
 /** BRE patterns that must convert to tgrep's ERE without changing what grep matches, grouped by rule. */
@@ -274,7 +283,8 @@ function missingTools() {
 }
 
 function runShell(command, cwd) {
-  const r = spawnSync("bash", ["-c", command], { cwd, encoding: "utf8", timeout: 30_000 });
+  // Like pi's bash tool, stdin is not a pipe, so a path-less rg searches the directory instead of reading stdin.
+  const r = spawnSync("bash", ["-c", command], { cwd, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
   const lines = (r.stdout ?? "").split("\n").filter((line) => line !== "");
   // Output order is not part of the contract: tgrep and grep -r walk directories differently.
   return { lines: lines.sort(), code: r.status };

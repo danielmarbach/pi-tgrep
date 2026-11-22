@@ -36,7 +36,8 @@ path into the fast one and closes the side doors.
    (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, bare or namespaced like
    `mcp__context-mode__ctx_execute`, extend via `PI_TGREP_WATCH_TOOLS`), pipeline-aware:
    - commands are split on top-level `|`; each segment is judged on its primary binary;
-   - grep/`rg` scan segments (pattern + path present) are transparently translated to
+   - grep/`rg` scan segments (a pattern, plus a path unless `rg` or `grep -r` searches the
+     working directory) are transparently translated to
      `tgrep search` (the CLI's `search` subcommand — it answers from an existing index or
      scans directly, while the bare default query mode can hang when no server is running)
      with quote-preserving re-emission (`'foo|bar'` stays quoted, an empty `""` pattern stays
@@ -59,6 +60,9 @@ path into the fast one and closes the side doors.
      files directly (tgrep prints its own notice) — a bare query-mode `tgrep`, which would
      rebuild an index beside the searched path or hang, is never emitted; `-e`/`--regexp`/
      `-f`/`--file` pattern arguments are tracked so a pattern never masquerades as a path;
+   - without a path, `rg PATTERN` is translated with no path and `grep -r PATTERN` with `.`
+     appended, so the output keeps grep's `./` prefix; a non-recursive grep without a file
+     reads stdin and runs unchanged;
    - the same `--no-ignore-parent` is added when a translated command's path operand exists in
      the repo and `git check-ignore` reports it ignored;
    - `rg --files`, `rg --type-list`, `rg -h/--help/-V/--version` and `grep --help/--version`
