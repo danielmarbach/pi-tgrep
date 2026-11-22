@@ -430,7 +430,7 @@ async function runWatchedToolsTests() {
 
   input = { language: "javascript", code: "execSync(`grep ${name} .`);" };
   r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
-  assert.equal(r.action, "block");
+  assert.equal(r.action, "allow");
 
   input = { language: "javascript", code: "const out = spawnSync('grep -rn foo .');" };
   r = await applyToolCallPolicy("ctx_execute_file", input, "translate", watched);

@@ -79,11 +79,14 @@ path into the fast one and closes the side doors.
      `spawn`, `spawnSync`): the string literal (single-quoted, double-quoted, or a backtick
      template) is decoded (`\\|`, `\'`, `\n`, `\xHH`, `\uHHHH`, …), translated in place and
      re-encoded in the same quote style, so `execSync('grep -rn …')` can no longer bypass the
-     index; interpolated or statically unextractable commands are blocked; argv-form calls
+     index; each `${…}` in a template is an opaque dynamic word (a grep that uses it runs
+     unchanged, other commands in the string are still translated); argv-form calls
      (`execFileSync('rg', ['--files', …])`) pass only the program name, which runs unchanged;
      member calls only count when the receiver is bound to `child_process` (so
-     `regex.exec(line)` is left alone), and an unextractable command only blocks when the code
-     mentions grep;
+     `regex.exec(line)` is left alone); a command that isn't a string literal
+     (`execSync(cmd)`) blocks only when some string literal in the code is a grep that would
+     be translated or blocked, so prose mentions of grep and stdin filters
+     (`ps aux | grep node`) still run;
    - `ctx_batch_execute` entries are checked individually (the entry's label appears in block
      reasons);
    - output-side redirects are preserved with fd numbers still glued to their redirect

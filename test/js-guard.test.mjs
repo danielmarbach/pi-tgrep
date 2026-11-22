@@ -114,6 +114,50 @@ src\nls -la'`,
   });
   await jsCase("require('child_process').spawnSync(\"grep\", ['-rn', 'foo', 'src']);", { action: "allow" });
 
+  // Template interpolation: each ${…} is opaque, so a grep that uses it runs unchanged while the
+  // rest of the command is still translated.
+  await jsCase("execSync(`grep -rn foo ${dir}`);", { action: "allow" });
+  await jsCase("execSync(`grep -rn foo src && echo ${name}`);", {
+    action: "rewrite",
+    code: "execSync(`tgrep search --index-path '/repo/.tgrep' -n foo src && echo ${name}`);",
+  });
+  await jsCase("execSync(`echo ${a.map((x) => `${x}}`).join('}')} && grep -rn foo src`);", {
+    action: "rewrite",
+    code: "execSync(`echo ${a.map((x) => `${x}}`).join('}')} && tgrep search --index-path '/repo/.tgrep' -n foo src`);",
+  });
+  await jsCase("execSync(`grep -rn 'a\\${b}' src; echo ${name}`);", {
+    action: "rewrite",
+    code: "execSync(`tgrep search --index-path '/repo/.tgrep' -n 'a\\\\$\\\\{b\\\\}' src; echo ${name}`);",
+  });
+
+  // Harmless interpolated templates: "grep" is prose, or only stdin filters are involved.
+  await jsCase(
+    "execSync(`PI_TGREP_SCOPE=session pi -e ${pkgDir} -p \"Use your grep tool to find where DECISIONS_FILE is defined. Reply with just the file path.\"`, {encoding:'utf8'});",
+    { action: "allow" },
+  );
+  await jsCase(
+    "execSync(`strings '${dll}' | grep -iA2 -B2 \"FromKeyedServices\\\\|get_Key\\\\|.ctor\" | head -40`);",
+    { action: "allow" },
+  );
+  await jsCase("execSync(`${ilspy} -l \"${dll}\" 2>&1 | grep -i keyed`);", { action: "allow" });
+
+  // A command that can't be tied to an exec call blocks only when some string literal in the code
+  // is a grep that bypasses the index.
+  await jsCase(
+    "const run = (cmd) => { try { return execSync(cmd, {encoding:'utf8'}).trim(); } catch (e) { return ''; } };\n" +
+      "console.log(run(`ps aux | grep -E \"node|vitest|git\" | grep -v grep | sort -rk3 | head -20`));",
+    { action: "allow" },
+  );
+  await jsCase(
+    "const run = (cmd) => execSync(cmd, {encoding:'utf8'});\n" +
+      "console.log(run('grep -n \"alwaysLoad\" src/storage.ts | head -5'));",
+    { action: "block", reasonMatch: /bypasses the tgrep index/ },
+  );
+  await jsCase(
+    "const run = (cmd) => execSync(cmd);\nrun(`grep -rn ${term} src && grep -rn foo lib`);",
+    { action: "block", reasonMatch: /bypasses the tgrep index/ },
+  );
+
   // Bare destructured execSync stays guarded as today even though the arg is a variable, because
   // FAMILY_PATTERN matches elsewhere in the code (the literal grep command assigned to cmd).
   await jsCase(

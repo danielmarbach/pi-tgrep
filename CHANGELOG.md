@@ -35,6 +35,10 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - `grep`/`rg` commands inside single-quoted or backslash-escaped JavaScript strings passed to
   `exec`/`execSync` in `ctx_execute` are now translated to `tgrep search` instead of being
   blocked, and argv-style calls such as `execFileSync('rg', ['--files', …])` run unchanged.
+- `ctx_execute` scripts that build a command with a template interpolation (`${…}`) or pass it
+  through a helper (`run(cmd)`) are no longer blocked wholesale: only a script containing a grep
+  that would bypass the index is blocked, so harmless uses such as `… | grep -v x` or "grep" in a
+  prompt run as written.
 
 ## [0.5.0] - 2026-10-16
 
