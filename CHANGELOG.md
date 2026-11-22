@@ -49,6 +49,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - A translated `grep` now searches hidden files and directories such as `.github/` and
   `.mnemonic/`, as grep does, instead of silently skipping them
   (`grep -rn --include='*.yml' needle .` found nothing in `.github/workflows/`).
+- A translated `grep` or `rg` command that repeats a flag (`grep -n 'export MODEL=' -n SKILL.md`,
+  `-i … -i`, `-A 1 -A 2`) no longer fails with tgrep's `cannot be used multiple times` error; a
+  repeated flag with a value keeps its last value, as grep does.
 
 ## [0.5.0] - 2026-10-16
 

@@ -50,6 +50,37 @@ async function runHiddenEmissionTests() {
   console.log("hidden emission tests ok");
 }
 
+async function runRepeatedFlagTests() {
+  // tgrep (clap) rejects a repeated flag that grep and rg accept; repeats collapse before emission.
+  const rewrite = (command) => ({ action: "rewrite", command });
+  await policyCase("grep -n 'export MODEL=' -n SKILL.md", "translate", rewrite("tgrep search --hidden -n 'export MODEL=' SKILL.md"));
+  await policyCase("grep -n --line-number foo f", "translate", rewrite("tgrep search --hidden -n foo f"));
+  await policyCase("grep -rli 'a\\|b' --include='*' -l .", "translate", rewrite("tgrep search --hidden -l -i -g '*' 'a|b' ."));
+  await policyCase("grep -i foo -i f", "translate", rewrite("tgrep search --hidden -i foo f"));
+  await policyCase("grep -c -c foo f", "translate", rewrite("tgrep search --hidden -c --include-zero foo f"));
+  await policyCase("fgrep -F a.b f", "translate", rewrite("tgrep search --hidden -F a.b f"));
+  await policyCase("rg -n --line-number foo .", "translate", rewrite("tgrep search -n foo ."));
+  await policyCase("rg --hidden --hidden foo .", "translate", rewrite("tgrep search --hidden foo ."));
+  await policyCase("rg foo . -i -n --ignore-case", "translate", rewrite("tgrep search foo . -i -n"));
+  // A repeated flag that takes a value keeps the last one, in the position of the last one.
+  await policyCase("grep -A 1 -A 2 foo f", "translate", rewrite("tgrep search --hidden -A 2 foo f"));
+  await policyCase("grep -A1 -n -A2 foo f", "translate", rewrite("tgrep search --hidden -n -A 2 foo f"));
+  await policyCase("grep -m 1 --max-count=3 foo f", "translate", rewrite("tgrep search --hidden -m 3 foo f"));
+  await policyCase("grep --color=never --color=always foo f", "translate", rewrite("tgrep search --hidden --color always foo f"));
+  await policyCase("rg -C 1 -C 2 foo .", "translate", rewrite("tgrep search -C 2 foo ."));
+  await policyCase("rg --max-count=1 -m 2 foo .", "translate", rewrite("tgrep search -m 2 foo ."));
+  await policyCase("rg --sort path --sort none foo .", "translate", rewrite("tgrep search --sort none foo ."));
+  // Flags tgrep lets repeat are all kept.
+  await policyCase("grep -e a -e b f", "translate", rewrite("tgrep search --hidden -e a -e b f"));
+  await policyCase("rg -g '*.ts' -g '*.md' foo .", "translate", rewrite("tgrep search -g '*.ts' -g '*.md' foo ."));
+  await policyCase("rg -t cs -t py foo .", "translate", rewrite("tgrep search -t cs -t py foo ."));
+  // A search path that is git-ignored must not duplicate a --no-ignore-parent the user already passed.
+  await policyCase("rg --no-ignore-parent -l ERROR bin/Debug", "translate", rewrite("tgrep search --no-ignore-parent -l ERROR bin/Debug"), {
+    isIgnored: () => Promise.resolve(true),
+  });
+  console.log("repeated flag emission tests ok");
+}
+
 async function runUnquotedGlobTests() {
   // Unquoted globs/tildes/braces must stay unquoted so the shell expands them, not tgrep.
   await policyCase("grep -n X src/*.ts", "translate", {
@@ -126,6 +157,7 @@ async function runShellGlobExpansionExecTest() {
 await runEmptyPatternTests();
 await runCountEmissionTests();
 await runHiddenEmissionTests();
+await runRepeatedFlagTests();
 await runUnquotedGlobTests();
 await runQuotedTokensStayQuotedTests();
 await runShellGlobExpansionExecTest();

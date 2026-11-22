@@ -142,6 +142,57 @@ const RG_LONG_SPECS: Record<`--${string}`, RgLongSpec> = {
   "--ignore-file": { kind: "arg" }, "--threads": { kind: "arg" }, "--colors": { kind: "arg" },
 };
 
+/** Long and short spellings of one rg/tgrep flag; clap rejects the same flag given twice. */
+const FLAG_ALIASES: Record<string, string> = {
+  "--ignore-case": "-i", "--case-sensitive": "-s", "--smart-case": "-S", "--fixed-strings": "-F",
+  "--word-regexp": "-w", "--invert-match": "-v", "--multiline": "-U", "--files-with-matches": "-l",
+  "--files-without-match": "-L", "--count": "-c", "--only-matching": "-o", "--quiet": "-q",
+  "--text": "-a", "--with-filename": "-H", "--no-filename": "-I", "--line-number": "-n",
+  "--no-line-number": "-N", "--pretty": "-p", "--byte-offset": "-b", "--line-regexp": "-x",
+  "--null": "-0", "--pcre2": "-P", "--after-context": "-A", "--before-context": "-B",
+  "--context": "-C", "--max-count": "-m", "--max-columns": "-M", "--encoding": "-E",
+  "--threads": "-j", "--replace": "-r",
+  "--regexp": "-e", "--file": "-f", "--glob": "-g", "--type": "-t", "--type-not": "-T",
+};
+
+/** Value flags tgrep accepts more than once; every other repeated flag is a usage error. */
+const REPEATABLE_FLAGS = new Set(["-e", "-f", "-g", "-t", "-T", "--iglob", "--type-add", "--type-clear"]);
+
+function flagTakesValue(name: string): boolean {
+  return name.startsWith("--") ? RG_LONG_SPECS[name as `--${string}`]?.kind === "arg" : RG_SHORT_SPECS[name.slice(1)]?.kind === "arg";
+}
+
+/** Collapses repeated flags: a value-less repeat is dropped, a repeated value flag keeps its last
+ * occurrence (grep and rg semantics). Tokens from `end` on are positionals and stay untouched. */
+function dedupeFlags(tokens: OutToken[], end = tokens.length): OutToken[] {
+  const groups: OutToken[][] = [];
+  const seen = new Map<string, number>();
+  for (let i = 0; i < end; i++) {
+    const head = tokens[i]!;
+    if (!head.text.startsWith("-") || head.text === "-") {
+      groups.push([head]);
+      continue;
+    }
+    const eq = head.text.startsWith("--") ? head.text.indexOf("=") : -1;
+    const name = eq === -1 ? head.text : head.text.slice(0, eq);
+    const takesValue = flagTakesValue(name);
+    const group = eq === -1 && takesValue && i + 1 < end ? [head, tokens[++i]!] : [head];
+    const key = FLAG_ALIASES[name] ?? name;
+    if (REPEATABLE_FLAGS.has(key)) {
+      groups.push(group);
+      continue;
+    }
+    const previous = seen.get(key);
+    if (previous !== undefined) {
+      if (!takesValue) continue;
+      groups[previous] = [];
+    }
+    seen.set(key, groups.length);
+    groups.push(group);
+  }
+  return [...groups.flat(), ...tokens.slice(end)];
+}
+
 type GrepShortSpec =
   | { kind: "emit"; to: string; engine?: GrepEngine }
   | { kind: "arg"; to: string }
@@ -888,11 +939,12 @@ function translateRg(tokens: Token[]): Translation | { error: string } {
   while (i < tokens.length) {
     const t = tokens[i]!;
     if (t.text === "--") {
+      const flagCount = out.length;
       for (const rest of tokens.slice(i + 1)) {
         out.push(passThrough(rest));
         positionals.push({ text: rest.text, quoted: rest.quoted });
       }
-      return { tokens: out, positionals, patternFlag, patterns: [], engine: "ere" };
+      return { tokens: dedupeFlags(out, flagCount), positionals, patternFlag, patterns: [], engine: "ere" };
     }
     if (t.text.startsWith("--")) {
       const eq = t.text.indexOf("=");
@@ -935,7 +987,7 @@ function translateRg(tokens: Token[]): Translation | { error: string } {
     }
     i++;
   }
-  return { tokens: out, positionals, patternFlag, patterns: [], engine: "ere" };
+  return { tokens: dedupeFlags(out), positionals, patternFlag, patterns: [], engine: "ere" };
 }
 
 function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translation | { error: string } {
@@ -1039,8 +1091,9 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
   if (counting) out.push({ text: "--include-zero" });
   const positionals = positionalTokens.map((p) => ({ text: p.text, quoted: p.quoted }));
   const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!.text] : [];
-  for (const p of positionalTokens) out.push(passThrough(p));
-  return { tokens: out, positionals, patternFlag, patterns, engine, recursive };
+  const flagTokens = dedupeFlags(out);
+  for (const p of positionalTokens) flagTokens.push(passThrough(p));
+  return { tokens: flagTokens, positionals, patternFlag, patterns, engine, recursive };
 }
 
 /** Rewrites the BRE pattern tokens of a translation to ERE in place; false when one can't be converted. */
@@ -1165,7 +1218,11 @@ async function policySegment(
   if (indexPath && !hasIndexPath && allPathsRelative) {
     rendered.push("--index-path", emitToken(indexPath, true));
   }
-  if (isIgnored && (await anyIgnored(resolvedPaths.length > 0 ? resolvedPaths : ["."], isIgnored))) {
+  if (
+    isIgnored &&
+    !translation.tokens.some((t) => t.text === "--no-ignore-parent") &&
+    (await anyIgnored(resolvedPaths.length > 0 ? resolvedPaths : ["."], isIgnored))
+  ) {
     rendered.push("--no-ignore-parent");
   }
   rendered.push(...translation.tokens.map((t) => renderOutToken(t)));

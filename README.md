@@ -222,6 +222,11 @@ The `grep` tool also recovers from common model mistakes, adding only notices an
 - grep searches dotfiles and dot directories (`.github/`, `.mnemonic/`), but tgrep skips hidden paths
   unless given `--hidden`, so every translated `grep`/`egrep`/`fgrep` adds `--hidden` (it then also
   searches `.git/`, like grep does); `rg` skips hidden paths itself, so `rg` is translated as written.
+- grep and rg accept a flag given twice (`grep -n pat -n file`, `-i … -i`, `-A 1 -A 2`), but tgrep exits
+  with a usage error, so translated commands collapse repeats, treating `-n`/`--line-number` and
+  the like as one flag: a repeated switch is emitted once, and a repeated flag with a value (`-A`,
+  `-m`, `--color`, …) keeps its last value, as grep does. `-e`, `-f`, `-g`/`--include`, `-t`,
+  `--type-not`, `--iglob` and `--type-add` may repeat and are all kept.
 - grep accepts rg's `--type`/`-t`, `--type-not` and `--type-add`; `rg --include=GLOB` is
   translated to `-g GLOB` as `grep --include` is; `rg -P` maps like `--pcre2`.
 - Plain `grep` (no `-E`/`-P`/`-F`) patterns are POSIX BRE, but tgrep's default engine is a Rust
