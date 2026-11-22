@@ -66,6 +66,8 @@ const EXTRA_FILES = {
   "App.sln": 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App.csproj", "{GUID}"\nEndProject\n',
   "build.log": "needle in an ignored log\n",
   "secrets/key.txt": "needle in an ignored dir\n",
+  ".github/workflows/ci.yml": "steps:\n  - run: echo needle\n",
+  ".hidden-notes.md": "needle in a dotfile\n",
 };
 
 /**
@@ -145,6 +147,10 @@ const BATTERY = [
   { cmd: "grep -rn needle build.log" },
   { cmd: "grep -rn needle .", known: "grep does not read .gitignore; tgrep skips ignored files (by design)" },
   { cmd: "grep -rc needle src" },
+  { cmd: "grep -rn needle .github" },
+  { cmd: "grep -rn --include='*.yml' needle ." },
+  { cmd: "grep -rl --include='*.md' needle ." },
+  { cmd: "grep -n needle .hidden-notes.md" },
   { cmd: "rg -n needle secrets" },
   { cmd: "grep -rn needle secrets" },
 

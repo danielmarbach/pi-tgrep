@@ -46,6 +46,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   a single file, as real `grep -r` prints it.
 - A translated `grep -c` now prints a `0` count for files without a match, as grep does, instead
   of omitting them (`grep -c foo file.ts` printed nothing when `foo` was absent).
+- A translated `grep` now searches hidden files and directories such as `.github/` and
+  `.mnemonic/`, as grep does, instead of silently skipping them
+  (`grep -rn --include='*.yml' needle .` found nothing in `.github/workflows/`).
 
 ## [0.5.0] - 2026-10-16
 

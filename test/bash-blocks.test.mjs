@@ -31,12 +31,12 @@ async function runShellExpansionAllowTests() {
 async function runShellExpansionTranslateTests() {
   await policyCase("x=$(date); grep -rn foo src", "translate", {
     action: "rewrite",
-    command: "x=$(date); tgrep search -n foo src",
+    command: "x=$(date); tgrep search --hidden -n foo src",
   });
   // $ inside single quotes is a literal, not an expansion
   await policyCase("grep -rn 'literal $x in single quotes' src", "translate", {
     action: "rewrite",
-    command: "tgrep search -n 'literal \\$x in single quotes' src",
+    command: "tgrep search --hidden -n 'literal \\$x in single quotes' src",
   });
   console.log("shell expansion translate tests ok");
 }
@@ -66,30 +66,30 @@ async function runSubstitutionRewriteTests() {
   // A real tree scan inside a substitution is translated in place; its stdin filters stay.
   await policyCase("for f in $(grep -rl X src | grep -v obj/); do echo $f; done", "translate", {
     action: "rewrite",
-    command: "for f in $(tgrep search --index-path '/repo/.tgrep' -l X src | grep -v obj/); do echo $f; done",
+    command: "for f in $(tgrep search --index-path '/repo/.tgrep' --hidden -l X src | grep -v obj/); do echo $f; done",
   }, IDX);
   await policyCase("x=$(grep -rn foo src | head -1)", "translate", {
     action: "rewrite",
-    command: "x=$(tgrep search --index-path '/repo/.tgrep' -n foo src | head -1)",
+    command: "x=$(tgrep search --index-path '/repo/.tgrep' --hidden -n foo src | head -1)",
   }, IDX);
   await policyCase("echo `grep -rn foo src`", "translate", {
     action: "rewrite",
-    command: "echo `tgrep search --index-path '/repo/.tgrep' -n foo src`",
+    command: "echo `tgrep search --index-path '/repo/.tgrep' --hidden -n foo src`",
   }, IDX);
   await policyCase("echo $(grep -rn foo src) $(rg -l bar lib)", "translate", {
     action: "rewrite",
-    command: "echo $(tgrep search --index-path '/repo/.tgrep' -n foo src) $(tgrep search --index-path '/repo/.tgrep' -l bar lib)",
+    command: "echo $(tgrep search --index-path '/repo/.tgrep' --hidden -n foo src) $(tgrep search --index-path '/repo/.tgrep' -l bar lib)",
   }, IDX);
   // the outer grep over the substitution stays verbatim while the inner scan is translated
   await policyCase("grep -n foo $(grep -rl bar src)", "translate", {
     action: "rewrite",
-    command: "grep -n foo $(tgrep search --index-path '/repo/.tgrep' -l bar src)",
+    command: "grep -n foo $(tgrep search --index-path '/repo/.tgrep' --hidden -l bar src)",
   }, IDX);
   // the substitution runs where the command runs, so a cd before it selects the index
   const resolved = [];
   await policyCase("cd /other && x=$(grep -rn foo src)", "translate", {
     action: "rewrite",
-    command: "cd /other && x=$(tgrep search --index-path '/other/.tgrep' -n foo src)",
+    command: "cd /other && x=$(tgrep search --index-path '/other/.tgrep' --hidden -n foo src)",
   }, {
     cwd: "/start",
     resolveIndex: async (cwd) => {
@@ -101,7 +101,7 @@ async function runSubstitutionRewriteTests() {
   // a cd inside the substitution runs in a subshell and applies to that body only
   await policyCase("x=$(cd lib && grep -rn foo .); grep -rn bar .", "translate", {
     action: "rewrite",
-    command: "x=$(cd lib && tgrep search --index-path '/start/lib/.tgrep' -n foo .); tgrep search --index-path '/start/.tgrep' -n bar .",
+    command: "x=$(cd lib && tgrep search --index-path '/start/lib/.tgrep' --hidden -n foo .); tgrep search --index-path '/start/.tgrep' --hidden -n bar .",
   }, {
     cwd: "/start",
     resolveIndex: async (cwd) => `${cwd}/.tgrep`,
@@ -125,11 +125,11 @@ async function runDoubleQuotedSubstitutionTests() {
   });
   await policyCase('echo "count: $(grep -c foo src/a.ts)"', "translate", {
     action: "rewrite",
-    command: 'echo "count: $(tgrep search -c --include-zero foo src/a.ts)"',
+    command: 'echo "count: $(tgrep search --hidden -c --include-zero foo src/a.ts)"',
   });
   await policyCase('echo "first: `grep -rl foo src | head -1`"', "translate", {
     action: "rewrite",
-    command: 'echo "first: `tgrep search -l foo src | head -1`"',
+    command: 'echo "first: `tgrep search --hidden -l foo src | head -1`"',
   });
   await policyCase('echo "x $(echo "a|b" | grep -c a)"', "translate", { action: "allow" });
   console.log("double-quoted substitution tests ok");
@@ -151,25 +151,25 @@ async function runSubstitutionWordTests() {
   // an inner tree scan is still rewritten in place with the assignment intact
   await policyCase("x=$(command grep -rl foo src | head -1)", "translate", {
     action: "rewrite",
-    command: "x=$(command tgrep search --index-path '/repo/.tgrep' -l foo src | head -1)",
+    command: "x=$(command tgrep search --index-path '/repo/.tgrep' --hidden -l foo src | head -1)",
   }, IDX);
   await policyCase("p=$(command grep -oE 'skills/sandbox[^ ]* +[^ ]+' template/Dockerfile | head -1 | awk '{print $2}')", "translate", {
     action: "rewrite",
     command:
-      "p=$(command tgrep search --index-path '/repo/.tgrep' -o 'skills/sandbox[^ ]* +[^ ]+' template/Dockerfile | head -1 | awk '{print $2}')",
+      "p=$(command tgrep search --index-path '/repo/.tgrep' --hidden -o 'skills/sandbox[^ ]* +[^ ]+' template/Dockerfile | head -1 | awk '{print $2}')",
   }, IDX);
   // an assignment prefix holding a substitution keeps working for the grep that follows it
   await policyCase('FOO="$(echo a b)" grep -rn foo src', "translate", {
     action: "rewrite",
-    command: "FOO=$(echo a b) tgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "FOO=$(echo a b) tgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   await policyCase("FOO=$(echo a b) grep -rn foo src", "translate", {
     action: "rewrite",
-    command: "FOO=$(echo a b) tgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "FOO=$(echo a b) tgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   await policyCase("FOO=${X:-a b} grep -rn foo src", "translate", {
     action: "rewrite",
-    command: "FOO=${X:-a b} tgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "FOO=${X:-a b} tgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   // a redirect inside the substitution does not cut the word short
   await policyCase("x=$(git grep -l y 2>/dev/null | head -1) && echo $x", "translate", { action: "allow" }, IDX);
@@ -197,16 +197,16 @@ async function runProcessSubstitutionTests() {
   // a tree scan inside a process substitution is translated in place
   await policyCase("while read f; do echo $f; done < <(grep -rl foo src)", "translate", {
     action: "rewrite",
-    command: "while read f; do echo $f; done < <(tgrep search --index-path '/repo/.tgrep' -l foo src)",
+    command: "while read f; do echo $f; done < <(tgrep search --index-path '/repo/.tgrep' --hidden -l foo src)",
   }, IDX);
   await policyCase("diff <(grep -rn a src) <(grep -rn b src)", "translate", {
     action: "rewrite",
     command:
-      "diff <(tgrep search --index-path '/repo/.tgrep' -n a src) <(tgrep search --index-path '/repo/.tgrep' -n b src)",
+      "diff <(tgrep search --index-path '/repo/.tgrep' --hidden -n a src) <(tgrep search --index-path '/repo/.tgrep' --hidden -n b src)",
   }, IDX);
   await policyCase("grep -c x <(grep -rl foo src | head -2)", "translate", {
     action: "rewrite",
-    command: "grep -c x <(tgrep search --index-path '/repo/.tgrep' -l foo src | head -2)",
+    command: "grep -c x <(tgrep search --index-path '/repo/.tgrep' --hidden -l foo src | head -2)",
   }, IDX);
   // a plain stdin redirect still blocks a grep; `< <(…)` blocks only when the redirected command is a grep
   await policyCase("grep foo < file.txt", "translate", { action: "block" }, IDX);
@@ -280,11 +280,11 @@ async function runOrSeparatorTests() {
   const IDX = { indexPath: "/repo/.tgrep" };
   await policyCase("false || grep -rn foo src/", "translate", {
     action: "rewrite",
-    command: "false || tgrep search --index-path '/repo/.tgrep' -n foo src/",
+    command: "false || tgrep search --index-path '/repo/.tgrep' --hidden -n foo src/",
   }, IDX);
   await policyCase("grep -rn foo src/ || echo none", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src/ || echo none",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src/ || echo none",
   }, IDX);
   console.log("|| separator tests ok");
 }
@@ -304,7 +304,7 @@ async function runHeredocTests() {
   // A real grep on another segment is still translated, with the heredoc body kept byte for byte.
   await policyCase("grep -rn foo src && cat <<'EOF'\n<y> it's\nEOF", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src && cat <<'EOF'\n<y> it's\nEOF",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src && cat <<'EOF'\n<y> it's\nEOF",
   }, IDX);
   // A heredoc is the grep's stdin; tgrep search doesn't read stdin, so it runs unchanged.
   await policyCase("grep -rn foo src <<EOF\nx\nEOF", "translate", { action: "allow" }, IDX);
@@ -331,7 +331,7 @@ async function runPipeFedGrepTests() {
   // Another segment of the same command is still translated.
   await policyCase("git ls-files -z | grep -zv Tests/; grep -rn foo src", "translate", {
     action: "rewrite",
-    command: "git ls-files -z | grep -zv Tests/; tgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "git ls-files -z | grep -zv Tests/; tgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   // Not pipe-fed: the unsupported flag still blocks.
   const notPiped = await policyCase("grep -z foo src/a.ts", "translate", { action: "block" }, IDX);
@@ -365,16 +365,16 @@ async function runImplicitPathTests() {
   // Recursive grep without a path searches `.`; the `.` keeps grep's ./ output prefix.
   await policyCase('grep -rn "encodingsByCode" --include="*.cs"', "translate", {
     action: "rewrite",
-    command: `${prefix} -n -g '*.cs' encodingsByCode .`,
+    command: `${prefix} --hidden -n -g '*.cs' encodingsByCode .`,
   }, IDX);
   await policyCase('grep -rn "ImplementsInterfaceMember" --include="*.cs" -l', "translate", {
     action: "rewrite",
-    command: `${prefix} -n -g '*.cs' -l ImplementsInterfaceMember .`,
+    command: `${prefix} --hidden -n -g '*.cs' -l ImplementsInterfaceMember .`,
   }, IDX);
-  await policyCase("grep -R foo", "translate", { action: "rewrite", command: `${prefix} foo .` }, IDX);
+  await policyCase("grep -R foo", "translate", { action: "rewrite", command: `${prefix} --hidden foo .` }, IDX);
   await policyCase("egrep --recursive 'a|b'", "translate", {
     action: "rewrite",
-    command: `${prefix} 'a|b' .`,
+    command: `${prefix} --hidden 'a|b' .`,
   }, IDX);
   await policyCase("cd /other && rg foo", "translate", {
     action: "rewrite",
@@ -410,43 +410,43 @@ async function runMultiLineTests() {
   // A newline separates commands like ; does, so a grep on its own line is translated.
   await policyCase("echo a\ngrep -rn foo src\necho b", "translate", {
     action: "rewrite",
-    command: "echo a\ntgrep search --index-path '/repo/.tgrep' -n foo src\necho b",
+    command: "echo a\ntgrep search --index-path '/repo/.tgrep' --hidden -n foo src\necho b",
   }, IDX);
   // Indentation survives, and so does a pipeline that continues on the next line.
   await policyCase("for f in a b; do\n  grep -rn foo src\ndone", "translate", {
     action: "rewrite",
-    command: "for f in a b; do\n  tgrep search --index-path '/repo/.tgrep' -n foo src\ndone",
+    command: "for f in a b; do\n  tgrep search --index-path '/repo/.tgrep' --hidden -n foo src\ndone",
   }, IDX);
   await policyCase("grep -rn foo src |\n  head -3", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src |\n  head -3",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src |\n  head -3",
   }, IDX);
   // An escaped newline is a continuation, not a separator.
   await policyCase("grep -rn \\\n  foo src", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   // Comments are not scanned: an apostrophe or grep in one is inert.
   await policyCase("# it's a grep -rn foo src\necho hi", "translate", { action: "allow" }, IDX);
   await policyCase("echo hi # don't grep\ngrep -rn foo src", "translate", {
     action: "rewrite",
-    command: "echo hi # don't grep\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "echo hi # don't grep\ntgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   // ;; closes a case arm and must not become "; ;".
   await policyCase("case $x in\n  a) echo a ;;\nesac\ngrep -rn foo src", "translate", {
     action: "rewrite",
-    command: "case $x in\n  a) echo a ;;\nesac\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "case $x in\n  a) echo a ;;\nesac\ntgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   // Grep reading a here-string has stdin data; it is not translated.
   await policyCase('grep -n foo src <<< "foo"', "translate", { action: "allow" }, IDX);
   // Redirects and backgrounding only block the grep they apply to, not unrelated lines of a script.
   await policyCase("while read l; do echo $l; done < in.txt\ngrep -rn foo src", "translate", {
     action: "rewrite",
-    command: "while read l; do echo $l; done < in.txt\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "while read l; do echo $l; done < in.txt\ntgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   await policyCase("server &\ngrep -rn foo src", "translate", {
     action: "rewrite",
-    command: "server &\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "server &\ntgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   await policyCase("sleep 1 && grep foo . &\necho done", "translate", { action: "block" }, IDX);
   await policyCase("cat < in.txt | grep foo", "translate", { action: "allow" }, IDX);
@@ -461,51 +461,51 @@ async function runReviewRegressionTests() {
   // A > in a trailing comment stays a comment.
   await policyCase("grep -rn foo src # TODO: 2>&1 > notes.txt", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src # TODO: 2>&1 > notes.txt",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src # TODO: 2>&1 > notes.txt",
   }, IDX);
   await policyCase("grep -rn foo src 2>/dev/null # x > y", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src 2>/dev/null # x > y",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src 2>/dev/null # x > y",
   }, IDX);
   // $'…' with an escaped quote doesn't swallow the rest of the script.
   await policyCase("printf $'it\\'s\\n'\nps aux | grep node", "translate", { action: "allow" }, IDX);
   await policyCase("printf $'it\\'s\\n'\ngrep -rn foo src", "translate", {
     action: "rewrite",
-    command: "printf $'it\\'s\\n'\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "printf $'it\\'s\\n'\ntgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   // A $'…' operand can't be resolved statically, so that grep runs unchanged.
   await policyCase("grep -rn $'a\\tb' src", "translate", { action: "allow" }, IDX);
   // An unparseable segment only blocks when the swallowed text contains a grep.
   await policyCase("grep -rn foo src\necho 'oops", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src\necho 'oops",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src\necho 'oops",
   }, IDX);
   const swallowed = await policyCase("echo 'oops\ngrep -rn foo src", "translate", { action: "block" }, IDX);
   assert.match(swallowed.reason, /quoting couldn't be parsed/);
   // A deferred < or & block needs an actual grep command, not the word grep in an argument.
   await policyCase("sort < grep-results.txt\ngrep -rn foo src", "translate", {
     action: "rewrite",
-    command: "sort < grep-results.txt\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "sort < grep-results.txt\ntgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   await policyCase("npm run rg-server &\ngrep -rn foo src", "translate", {
     action: "rewrite",
-    command: "npm run rg-server &\ntgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "npm run rg-server &\ntgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   // Assignment prefixes keep their quoting; an unquoted ~ still expands.
   await policyCase("FOO='a b' grep -rn foo src", "translate", {
     action: "rewrite",
-    command: "FOO='a b' tgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "FOO='a b' tgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   await policyCase("FOO=~/x grep -rn foo src", "translate", {
     action: "rewrite",
-    command: "FOO=~/x tgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "FOO=~/x tgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   // A cd that feeds a pipe or runs in the background is a subshell and doesn't move this shell.
   const calls = [];
   const resolver = { cwd: "/base", resolveIndex: async (cwd) => (calls.push(cwd), `${cwd}/.tgrep`) };
   await policyCase("cd /x | cat\ncd /y &\ngrep -rn a src", "translate", {
     action: "rewrite",
-    command: "cd /x | cat\ncd /y &\ntgrep search --index-path '/base/.tgrep' -n a src",
+    command: "cd /x | cat\ncd /y &\ntgrep search --index-path '/base/.tgrep' --hidden -n a src",
   }, resolver);
   assert.deepEqual(calls, ["/base"]);
   console.log("review regression tests ok");
@@ -520,15 +520,15 @@ async function runGlobOperandTests() {
     // grep -r names the file even when the glob expands to a single one, so -H keeps that prefix.
     await policyCase('grep -n "InternalsVisibleTo" -r *.csproj', "translate", {
       action: "rewrite",
-      command: "tgrep search -H -n InternalsVisibleTo *.csproj",
+      command: "tgrep search -H --hidden -n InternalsVisibleTo *.csproj",
     }, { cwd: dir });
     await policyCase("grep -rn foo *.ts", "translate", {
       action: "rewrite",
-      command: "tgrep search -n foo *.ts",
+      command: "tgrep search --hidden -n foo *.ts",
     }, { cwd: dir });
     await policyCase("grep -rn foo '*.csproj'", "translate", {
       action: "rewrite",
-      command: "tgrep search -n foo '*.csproj'",
+      command: "tgrep search --hidden -n foo '*.csproj'",
     }, { cwd: dir });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -547,7 +547,7 @@ async function runEreBracketTests() {
   }
   await policyCase("grep -rnE '\\[Ignore\\]|[a-z]+' src", "translate", {
     action: "rewrite",
-    command: "tgrep search -n '\\[Ignore\\]|[a-z]+' src",
+    command: "tgrep search --hidden -n '\\[Ignore\\]|[a-z]+' src",
   });
   console.log("ERE bracket tests ok");
 }
@@ -557,29 +557,29 @@ async function runKeywordPrefixTests() {
   // A grep after a shell keyword on the same line is still a grep.
   await policyCase("for f in a b; do grep -rn foo src; done", "translate", {
     action: "rewrite",
-    command: "for f in a b; do tgrep search --index-path '/repo/.tgrep' -n foo src; done",
+    command: "for f in a b; do tgrep search --index-path '/repo/.tgrep' --hidden -n foo src; done",
   }, IDX);
   await policyCase("if grep -q foo src/a.ts; then\n  echo found\nfi", "translate", {
     action: "rewrite",
-    command: "if tgrep search --index-path '/repo/.tgrep' -q foo src/a.ts; then\n  echo found\nfi",
+    command: "if tgrep search --index-path '/repo/.tgrep' --hidden -q foo src/a.ts; then\n  echo found\nfi",
   }, IDX);
   await policyCase("while grep -q foo src/a.ts; do sleep 1; done", "translate", {
     action: "rewrite",
-    command: "while tgrep search --index-path '/repo/.tgrep' -q foo src/a.ts; do sleep 1; done",
+    command: "while tgrep search --index-path '/repo/.tgrep' --hidden -q foo src/a.ts; do sleep 1; done",
   }, IDX);
   await policyCase("if true; then grep -rn a src; else grep -rn b src; fi", "translate", {
     action: "rewrite",
     command:
-      "if true; then tgrep search --index-path '/repo/.tgrep' -n a src; " +
-      "else tgrep search --index-path '/repo/.tgrep' -n b src; fi",
+      "if true; then tgrep search --index-path '/repo/.tgrep' --hidden -n a src; " +
+      "else tgrep search --index-path '/repo/.tgrep' --hidden -n b src; fi",
   }, IDX);
   await policyCase("! grep -rn foo src", "translate", {
     action: "rewrite",
-    command: "! tgrep search --index-path '/repo/.tgrep' -n foo src",
+    command: "! tgrep search --index-path '/repo/.tgrep' --hidden -n foo src",
   }, IDX);
   await policyCase("{ grep -rn foo src; }", "translate", {
     action: "rewrite",
-    command: "{ tgrep search --index-path '/repo/.tgrep' -n foo src; }",
+    command: "{ tgrep search --index-path '/repo/.tgrep' --hidden -n foo src; }",
   }, IDX);
   // Unchanged cases stay unchanged: stdin filters, dynamic operands, a quoted word that isn't a keyword.
   await policyCase("if cmd | grep -q foo; then echo y; fi", "translate", { action: "allow" }, IDX);
@@ -594,7 +594,7 @@ async function runKeywordPrefixTests() {
   // A { } group runs in this shell, so its cd is real.
   await policyCase("{ cd /x; grep -rn foo src; }", "translate", {
     action: "rewrite",
-    command: "{ cd /x; tgrep search --index-path '/x/.tgrep' -n foo src; }",
+    command: "{ cd /x; tgrep search --index-path '/x/.tgrep' --hidden -n foo src; }",
   }, resolver);
   // A condition with a flag that has no tgrep translation is blocked like any other grep.
   const unsupported = await policyCase("if grep -qz x f; then echo y; fi", "translate", { action: "block" }, IDX);
@@ -602,7 +602,7 @@ async function runKeywordPrefixTests() {
   // A loop that is backgrounded is translated, not blocked.
   await policyCase("for f in a; do grep -rn x src; done &", "translate", {
     action: "rewrite",
-    command: "for f in a; do tgrep search --index-path '/repo/.tgrep' -n x src; done &",
+    command: "for f in a; do tgrep search --index-path '/repo/.tgrep' --hidden -n x src; done &",
   }, IDX);
   console.log("keyword prefix tests ok");
 }
@@ -620,9 +620,9 @@ async function runCdTrackingTests() {
   const r = await policyCase("grep -rn a src\ncd /one\ngrep -rn b src\ncd ../two\ngrep -rn c src", "translate", {
     action: "rewrite",
     command:
-      "tgrep search --index-path '/base/.tgrep' -n a src\ncd /one\n" +
-      "tgrep search --index-path '/one/.tgrep' -n b src\ncd ../two\n" +
-      "tgrep search --index-path '/two/.tgrep' -n c src",
+      "tgrep search --index-path '/base/.tgrep' --hidden -n a src\ncd /one\n" +
+      "tgrep search --index-path '/one/.tgrep' --hidden -n b src\ncd ../two\n" +
+      "tgrep search --index-path '/two/.tgrep' --hidden -n c src",
   }, resolver);
   assert.equal(r.action, "rewrite");
   assert.deepEqual(calls, ["/base", "/one", "/two"]);
@@ -630,7 +630,7 @@ async function runCdTrackingTests() {
   await policyCase('cd "$D"\ngrep -rn a src', "translate", { action: "allow" }, resolver);
   await policyCase('cd "$D"\ncd /abs\ngrep -rn a src', "translate", {
     action: "rewrite",
-    command: 'cd "$D"\ncd /abs\ntgrep search --index-path \'/abs/.tgrep\' -n a src',
+    command: 'cd "$D"\ncd /abs\ntgrep search --index-path \'/abs/.tgrep\' --hidden -n a src',
   }, resolver);
   await policyCase('cd "$D"\ngrep -rn a src', "block", { action: "block" }, resolver);
   // bare cd, cd -, and another user's home can't be resolved statically.
@@ -652,15 +652,15 @@ async function runTildeTests() {
     // An unquoted leading ~ is followed by cd and the index is resolved for the expanded directory.
     await policyCase("cd ~/proj && grep -rn foo src", "translate", {
       action: "rewrite",
-      command: `cd ~/proj && tgrep search --index-path '${home}/proj/.tgrep' -n foo src`,
+      command: `cd ~/proj && tgrep search --index-path '${home}/proj/.tgrep' --hidden -n foo src`,
     }, answersFor(`${home}/proj`));
     await policyCase("cd ~ && grep -rn foo src", "translate", {
       action: "rewrite",
-      command: `cd ~ && tgrep search --index-path '${home}/.tgrep' -n foo src`,
+      command: `cd ~ && tgrep search --index-path '${home}/.tgrep' --hidden -n foo src`,
     }, answersFor(home));
     await policyCase("cd ~/proj\ngrep -rn foo src", "translate", {
       action: "rewrite",
-      command: `cd ~/proj\ntgrep search --index-path '${home}/proj/.tgrep' -n foo src`,
+      command: `cd ~/proj\ntgrep search --index-path '${home}/proj/.tgrep' --hidden -n foo src`,
     }, answersFor(`${home}/proj`));
     // ~user, a quoted ~, and a ~ that isn't leading are not expanded statically.
     await policyCase("cd ~someone && grep -rn foo src", "translate", { action: "allow" }, answersFor(`${home}/proj`));
@@ -668,17 +668,17 @@ async function runTildeTests() {
     // A single file operand under ~ still prints its name, as grep -r does for the real path.
     await policyCase("grep -rn foo ~/file.txt", "translate", {
       action: "rewrite",
-      command: "tgrep search -H -n foo ~/file.txt",
+      command: "tgrep search -H --hidden -n foo ~/file.txt",
     }, { indexPath: "/repo/.tgrep" });
     await policyCase('grep -rn foo "~/file.txt"', "translate", {
       action: "rewrite",
-      command: "tgrep search -n foo '~/file.txt'",
+      command: "tgrep search --hidden -n foo '~/file.txt'",
     }, { indexPath: "/repo/.tgrep" });
     // The ignored-path check sees the expanded path.
     const checked = [];
     await policyCase("grep -rn foo ~/file.txt", "translate", {
       action: "rewrite",
-      command: "tgrep search --no-ignore-parent -H -n foo ~/file.txt",
+      command: "tgrep search --no-ignore-parent -H --hidden -n foo ~/file.txt",
     }, {
       indexPath: "/repo/.tgrep",
       isIgnored: async (cwd, operand) => (checked.push(operand), true),

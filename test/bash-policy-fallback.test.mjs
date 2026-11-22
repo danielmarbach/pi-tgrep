@@ -17,24 +17,24 @@ async function policyCase(command, mode, expect, context) {
 
 async function runFallbackTests() {
   // BRE-only constructs are converted to ERE; back-references and unprovable patterns run verbatim
-  await policyCase("grep -rn 'a\\(b\\)\\+' src/", "translate", { action: "rewrite", command: "tgrep search -n 'a(b)+' src/" });
-  await policyCase("grep -e 'a\\(b\\)' -r src/", "translate", { action: "rewrite", command: "tgrep search -e 'a(b)' src/" });
+  await policyCase("grep -rn 'a\\(b\\)\\+' src/", "translate", { action: "rewrite", command: "tgrep search --hidden -n 'a(b)+' src/" });
+  await policyCase("grep -e 'a\\(b\\)' -r src/", "translate", { action: "rewrite", command: "tgrep search --hidden -e 'a(b)' src/" });
   await policyCase("grep -rn 'foo\\|bar' src/ --include='*.ts'", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n -g '*.ts' 'foo|bar' src/",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n -g '*.ts' 'foo|bar' src/",
   }, IDX);
-  await policyCase("grep -ie 'a\\|b' -e 'c\\{2\\}' src/", "translate", { action: "rewrite", command: "tgrep search -i -e 'a|b' -e 'c{2}' src/" });
-  await policyCase("grep -rn '\\<foo\\>' src/", "translate", { action: "rewrite", command: "tgrep search -n '\\bfoo\\b' src/" });
+  await policyCase("grep -ie 'a\\|b' -e 'c\\{2\\}' src/", "translate", { action: "rewrite", command: "tgrep search --hidden -i -e 'a|b' -e 'c{2}' src/" });
+  await policyCase("grep -rn '\\<foo\\>' src/", "translate", { action: "rewrite", command: "tgrep search --hidden -n '\\bfoo\\b' src/" });
   await policyCase("grep -rn '\\(a\\)\\1' src/", "translate", { action: "allow" });
   await policyCase("grep -rn -e 'a\\|b' -e '\\(c\\)\\1' src/", "translate", { action: "allow" });
   await policyCase("grep -rn 'a\\{,2\\}' src/", "translate", { action: "allow" });
   await policyCase("grep -rn 'foo\\|' src/", "translate", { action: "allow" });
   await policyCase("grep -rn '\\d' src/", "translate", { action: "allow" });
   // a pattern held in a flag file is not inspected; the positionals are all paths
-  await policyCase("grep -f pats.txt 'a\\|b' src/", "translate", { action: "rewrite", command: "tgrep search -f pats.txt 'a\\|b' src/" });
+  await policyCase("grep -f pats.txt 'a\\|b' src/", "translate", { action: "rewrite", command: "tgrep search --hidden -f pats.txt 'a\\|b' src/" });
   // rg patterns are already ERE-like and are never converted
   await policyCase("rg 'a\\|b' src/", "translate", { action: "rewrite", command: "tgrep search 'a\\|b' src/" });
-  await policyCase("grep -rnE 'a\\|b' src/", "translate", { action: "rewrite", command: "tgrep search -n 'a\\|b' src/" });
+  await policyCase("grep -rnE 'a\\|b' src/", "translate", { action: "rewrite", command: "tgrep search --hidden -n 'a\\|b' src/" });
   await policyCase("grep -rE '(a)\\1' src/", "translate", { action: "allow" });
   await policyCase("egrep '(a)\\1' .", "translate", { action: "allow" });
   await policyCase("grep -rn 'a\\(b\\)\\+' src/", "block", { action: "block" });
@@ -43,35 +43,35 @@ async function runFallbackTests() {
   // engine, so they are escaped instead of being silently mistranslated.
   await policyCase("grep -n '^| \`list\`' README.md AGENT.md", "translate", {
     action: "rewrite",
-    command: "tgrep search -n '^\\| `list`' README.md AGENT.md",
+    command: "tgrep search --hidden -n '^\\| `list`' README.md AGENT.md",
   });
-  await policyCase("grep -rn 'a(b)+' src/", "translate", { action: "rewrite", command: "tgrep search -n 'a\\(b\\)\\+' src/" });
-  await policyCase("grep -n 'a{2,3}' f", "translate", { action: "rewrite", command: "tgrep search -n 'a\\{2,3\\}' f" });
-  await policyCase("grep -n 'a?' f", "translate", { action: "rewrite", command: "tgrep search -n 'a\\?' f" });
+  await policyCase("grep -rn 'a(b)+' src/", "translate", { action: "rewrite", command: "tgrep search --hidden -n 'a\\(b\\)\\+' src/" });
+  await policyCase("grep -n 'a{2,3}' f", "translate", { action: "rewrite", command: "tgrep search --hidden -n 'a\\{2,3\\}' f" });
+  await policyCase("grep -n 'a?' f", "translate", { action: "rewrite", command: "tgrep search --hidden -n 'a\\?' f" });
 
   // ERE literal escapes are valid in the default engine and translate
   await policyCase("egrep '\\(x\\)' .", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' '\\(x\\)' .",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden '\\(x\\)' .",
   }, IDX);
   // fixed strings never trip pattern checks
   await policyCase("fgrep -n 'a\\(b\\)' .", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -F -n 'a\\(b\\)' .",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -F -n 'a\\(b\\)' .",
   }, IDX);
 
   // -P / --perl-regexp translate to tgrep search -P (PCRE2), no BRE fallback
   await policyCase("grep -rnP '(?<=a)b' src/", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n -P '(?<=a)b' src/",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n -P '(?<=a)b' src/",
   }, IDX);
   await policyCase("grep -P '\\(foo\\)' .", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -P '\\(foo\\)' .",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -P '\\(foo\\)' .",
   }, IDX);
   await policyCase("grep --perl-regexp -n 'a' .", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -P -n a .",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -P -n a .",
   }, IDX);
 
   // ag/ack/pt run untranslated in translate mode, still blocked in block mode
@@ -89,19 +89,19 @@ async function runFallbackTests() {
 
   // without an index directory the rewrite still routes through tgrep search, which scans directly
   const noIndex = await applyBashPolicy("grep -rn foo src/", "translate");
-  assert.deepEqual(noIndex, { action: "rewrite", command: "tgrep search -n foo src/" });
+  assert.deepEqual(noIndex, { action: "rewrite", command: "tgrep search --hidden -n foo src/" });
   const noIndexCompound = await applyBashPolicy("head -60 x.txt && grep -c foo y.txt", "translate");
-  assert.deepEqual(noIndexCompound, { action: "rewrite", command: "head -60 x.txt && tgrep search -c --include-zero foo y.txt" });
+  assert.deepEqual(noIndexCompound, { action: "rewrite", command: "head -60 x.txt && tgrep search --hidden -c --include-zero foo y.txt" });
 
   // index-path injection must be -e/-f aware: positionals are all paths when the pattern comes from a flag
   const noInjectE = await policyCase("grep -e foo -r /abs/path rel", "translate", {
     action: "rewrite",
-    command: "tgrep search -e foo /abs/path rel",
+    command: "tgrep search --hidden -e foo /abs/path rel",
   }, IDX);
   assert.ok(!noInjectE.command.includes("--index-path"), "-e with absolute path must skip injection");
   await policyCase("grep -e foo -r rel1 rel2", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -e foo rel1 rel2",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -e foo rel1 rel2",
   }, IDX);
   const noInjectRg = await policyCase("rg -e foo /abs rel", "translate", {
     action: "rewrite",
@@ -121,21 +121,21 @@ async function runFallbackTests() {
   await policyCase("rg -f pats.txt", "translate", { action: "rewrite", command: "tgrep search -f pats.txt" });
   const noInjectF = await policyCase("grep -f pats.txt /abs rel", "translate", {
     action: "rewrite",
-    command: "tgrep search -f pats.txt /abs rel",
+    command: "tgrep search --hidden -f pats.txt /abs rel",
   }, IDX);
   assert.ok(!noInjectF.command.includes("--index-path"), "-f shifts positionals to paths");
   await policyCase("grep -f pats.txt rel", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -f pats.txt rel",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -f pats.txt rel",
   }, IDX);
   const noInjectLong = await policyCase("grep --regexp foo /abs rel", "translate", {
     action: "rewrite",
-    command: "tgrep search -e foo /abs rel",
+    command: "tgrep search --hidden -e foo /abs rel",
   }, IDX);
   assert.ok(!noInjectLong.command.includes("--index-path"), "--regexp shifts positionals to paths");
   await policyCase("grep --regexp=foo rel1 rel2", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -e foo rel1 rel2",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -e foo rel1 rel2",
   }, IDX);
   const absAlone = await policyCase("rg foo /abs rel", "translate", {
     action: "rewrite",
@@ -154,29 +154,29 @@ async function runFallbackTests() {
   };
   const cdResolution = await applyBashPolicy("cd /repo && grep -rn foo src/", "translate", resolver);
   assert.equal(cdResolution.action, "rewrite");
-  assert.equal(cdResolution.command, "cd /repo && tgrep search --index-path '/repo/.tgrep' -n foo src/");
+  assert.equal(cdResolution.command, "cd /repo && tgrep search --index-path '/repo/.tgrep' --hidden -n foo src/");
   assert.deepEqual(resolvedCalls, ["/repo"], "relative cd targets resolve against the base cwd");
   const relCd = await applyBashPolicy("cd ../repo && grep foo .", "translate", {
     cwd: "/base/x",
     resolveIndex: async (cwd) => (cwd === "/base/repo" ? "/base/repo/.tgrep" : undefined),
   });
   assert.equal(relCd.action, "rewrite");
-  assert.equal(relCd.command, "cd ../repo && tgrep search --index-path '/base/repo/.tgrep' foo .");
+  assert.equal(relCd.command, "cd ../repo && tgrep search --index-path '/base/repo/.tgrep' --hidden foo .");
   const noRepo = await applyBashPolicy("grep foo .", "translate", {
     cwd: "/outside",
     resolveIndex: async () => undefined,
   });
-  assert.deepEqual(noRepo, { action: "rewrite", command: "tgrep search foo ." });
+  assert.deepEqual(noRepo, { action: "rewrite", command: "tgrep search --hidden foo ." });
 
   // namespaced tool routing still matches watched names as suffixes
   let input = { command: "grep -rn foo ." };
   let r = await applyToolCallPolicy("mcp__context-mode__bash", input, "translate", watched, IDX);
   assert.equal(r.action, "rewrite");
-  assert.equal(input.command, "tgrep search --index-path '/repo/.tgrep' -n foo .");
+  assert.equal(input.command, "tgrep search --index-path '/repo/.tgrep' --hidden -n foo .");
   input = { command: "grep -rn foo ." };
   r = await applyToolCallPolicy("mcp__context-mode__bash", input, "translate", watched);
   assert.equal(r.action, "rewrite");
-  assert.equal(input.command, "tgrep search -n foo .");
+  assert.equal(input.command, "tgrep search --hidden -n foo .");
   input = { command: "grep -rn foo ." };
   r = await applyToolCallPolicy("mcp__other__unrelated", input, "translate", watched);
   assert.equal(r.action, "allow");
@@ -188,38 +188,38 @@ async function runCompoundCommandTests() {
   // ; and && split compounds like | splits pipelines: non-search parts stay verbatim
   await policyCase("head -60 x.txt && grep -c foo y.txt", "translate", {
     action: "rewrite",
-    command: "head -60 x.txt && tgrep search --index-path '/repo/.tgrep' -c --include-zero foo y.txt",
+    command: "head -60 x.txt && tgrep search --index-path '/repo/.tgrep' --hidden -c --include-zero foo y.txt",
   }, IDX);
   await policyCase("echo hi; grep foo bar", "translate", {
     action: "rewrite",
-    command: "echo hi; tgrep search --index-path '/repo/.tgrep' foo bar",
+    command: "echo hi; tgrep search --index-path '/repo/.tgrep' --hidden foo bar",
   }, IDX);
   await policyCase("grep -rn foo src/ && npm test", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src/ && npm test",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src/ && npm test",
   }, IDX);
   await policyCase("grep foo . && cd /tmp", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' foo . && cd /tmp",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden foo . && cd /tmp",
   }, IDX);
   await policyCase("grep foo .;", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' foo .;",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden foo .;",
   }, IDX);
 
   // pure pipelines keep their exact rendering
   await policyCase("grep -rn foo src/ | head -5", "translate", {
     action: "rewrite",
-    command: "tgrep search --index-path '/repo/.tgrep' -n foo src/ | head -5",
+    command: "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src/ | head -5",
   }, IDX);
   await policyCase("echo x | grep foo . 2>&1 | tee out", "translate", {
     action: "rewrite",
-    command: "echo x | tgrep search --index-path '/repo/.tgrep' foo . 2>&1 | tee out",
+    command: "echo x | tgrep search --index-path '/repo/.tgrep' --hidden foo . 2>&1 | tee out",
   }, IDX);
   // cd prefix handling composes with compound splitting
   await policyCase("cd /tmp && grep -rn foo .", "translate", {
     action: "rewrite",
-    command: "cd /tmp && tgrep search --index-path '/repo/.tgrep' -n foo .",
+    command: "cd /tmp && tgrep search --index-path '/repo/.tgrep' --hidden -n foo .",
   }, IDX);
 
   // anything statically opaque or untranslatable in any part still blocks the whole command

@@ -939,7 +939,8 @@ function translateRg(tokens: Token[]): Translation | { error: string } {
 }
 
 function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translation | { error: string } {
-  const out: OutToken[] = [];
+  // grep never skips dotfiles or dot directories; tgrep does unless asked.
+  const out: OutToken[] = [{ text: "--hidden" }];
   const positionalTokens: Token[] = [];
   const ePatterns: string[] = [];
   let patternFlag = false;

@@ -54,37 +54,37 @@ async function run() {
   // cp bound to child_process via require(): member call with a backtick arg rewrites in place.
   await jsCase("const cp = require('child_process'); cp.execSync(`grep -rn foo src`);", {
     action: "rewrite",
-    code: "const cp = require('child_process'); cp.execSync(`tgrep search --index-path '/repo/.tgrep' -n foo src`);",
+    code: "const cp = require('child_process'); cp.execSync(`tgrep search --index-path '/repo/.tgrep' --hidden -n foo src`);",
   });
 
   // cp bound via import * as / default import forms.
   await jsCase("import * as cp from 'child_process'; cp.execSync(`grep -rn foo src`);", {
     action: "rewrite",
-    code: "import * as cp from 'child_process'; cp.execSync(`tgrep search --index-path '/repo/.tgrep' -n foo src`);",
+    code: "import * as cp from 'child_process'; cp.execSync(`tgrep search --index-path '/repo/.tgrep' --hidden -n foo src`);",
   });
   await jsCase("import cp from 'node:child_process'; cp.exec(`grep -rn foo src`);", {
     action: "rewrite",
-    code: "import cp from 'node:child_process'; cp.exec(`tgrep search --index-path '/repo/.tgrep' -n foo src`);",
+    code: "import cp from 'node:child_process'; cp.exec(`tgrep search --index-path '/repo/.tgrep' --hidden -n foo src`);",
   });
 
   // Chained require().execSync(...) receiver is recognized as child_process directly.
   await jsCase("require('child_process').execSync(`grep -rn foo src`);", {
     action: "rewrite",
-    code: "require('child_process').execSync(`tgrep search --index-path '/repo/.tgrep' -n foo src`);",
+    code: "require('child_process').execSync(`tgrep search --index-path '/repo/.tgrep' --hidden -n foo src`);",
   });
 
   // Single-quoted and escaped literals are decoded, translated, and re-encoded in the same quote style.
   await literalCase(
     String.raw`'grep -rn "downloadbutton" src --include=*.cs | head -20'`,
-    "tgrep search --index-path '/repo/.tgrep' -n -g '*.cs' downloadbutton src | head -20",
+    "tgrep search --index-path '/repo/.tgrep' --hidden -n -g '*.cs' downloadbutton src | head -20",
   );
   await literalCase(
     String.raw`'grep -n "Minif\\|minif" src/a.cs'`,
-    "tgrep search --index-path '/repo/.tgrep' -n 'Minif|minif' src/a.cs",
+    "tgrep search --index-path '/repo/.tgrep' --hidden -n 'Minif|minif' src/a.cs",
   );
   await literalCase(
     String.raw`"grep -rln 'GetAwaiter\\.GetResult\\|\\.Result\\|\\.Wait()' test/ --include='*.cs' | grep -v obj | grep -v bin"`,
-    "tgrep search --index-path '/repo/.tgrep' -l -n -g '*.cs' 'GetAwaiter\\.GetResult|\\.Result|\\.Wait\\(\\)' test/ | grep -v obj | grep -v bin",
+    "tgrep search --index-path '/repo/.tgrep' --hidden -l -n -g '*.cs' 'GetAwaiter\\.GetResult|\\.Result|\\.Wait\\(\\)' test/ | grep -v obj | grep -v bin",
   );
   await literalCase(
     "`" + String.raw`rg -l 'inputSchema:\\s*\\{' src/tools/` + "`",
@@ -92,20 +92,20 @@ async function run() {
   );
   await literalCase(
     String.raw`"grep -rn \"foo bar\" src"`,
-    "tgrep search --index-path '/repo/.tgrep' -n 'foo bar' src",
+    "tgrep search --index-path '/repo/.tgrep' --hidden -n 'foo bar' src",
   );
   await literalCase(
     String.raw`'grep -rn \'foo bar\' src'`,
-    "tgrep search --index-path '/repo/.tgrep' -n 'foo bar' src",
+    "tgrep search --index-path '/repo/.tgrep' --hidden -n 'foo bar' src",
   );
   await literalCase(
     String.raw`'grep -rn \x66o\u006f src\u{2f}app'`,
-    "tgrep search --index-path '/repo/.tgrep' -n foo src/app",
+    "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src/app",
   );
   await literalCase(
     String.raw`'grep -rn foo \
 src\nls -la'`,
-    "tgrep search --index-path '/repo/.tgrep' -n foo src\nls -la",
+    "tgrep search --index-path '/repo/.tgrep' --hidden -n foo src\nls -la",
   );
 
   // argv form: the first argument is just the program name, which runs unchanged.
@@ -119,15 +119,15 @@ src\nls -la'`,
   await jsCase("execSync(`grep -rn foo ${dir}`);", { action: "allow" });
   await jsCase("execSync(`grep -rn foo src && echo ${name}`);", {
     action: "rewrite",
-    code: "execSync(`tgrep search --index-path '/repo/.tgrep' -n foo src && echo ${name}`);",
+    code: "execSync(`tgrep search --index-path '/repo/.tgrep' --hidden -n foo src && echo ${name}`);",
   });
   await jsCase("execSync(`echo ${a.map((x) => `${x}}`).join('}')} && grep -rn foo src`);", {
     action: "rewrite",
-    code: "execSync(`echo ${a.map((x) => `${x}}`).join('}')} && tgrep search --index-path '/repo/.tgrep' -n foo src`);",
+    code: "execSync(`echo ${a.map((x) => `${x}}`).join('}')} && tgrep search --index-path '/repo/.tgrep' --hidden -n foo src`);",
   });
   await jsCase("execSync(`grep -rn 'a\\${b}' src; echo ${name}`);", {
     action: "rewrite",
-    code: "execSync(`tgrep search --index-path '/repo/.tgrep' -n 'a\\\\$\\\\{b\\\\}' src; echo ${name}`);",
+    code: "execSync(`tgrep search --index-path '/repo/.tgrep' --hidden -n 'a\\\\$\\\\{b\\\\}' src; echo ${name}`);",
   });
 
   // Harmless interpolated templates: "grep" is prose, or only stdin filters are involved.

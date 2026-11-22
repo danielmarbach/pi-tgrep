@@ -98,10 +98,10 @@ test("non-grep bash command passes through unstamped", async () => {
 
 test("pipeline translation stamps the rewritten full command", async () => {
   const { event } = await toolCall("p3", "bash", { command: "cat f | grep -n needle src | wc -l" });
-  assert.equal(event.input.command, `cat f | tgrep search --index-path '${IDX_PATH}' -n needle src | wc -l`);
+  assert.equal(event.input.command, `cat f | tgrep search --index-path '${IDX_PATH}' --hidden -n needle src | wc -l`);
   const patch = await toolResult("p3", "bash", { fullOutputPath: "/tmp/out.txt" });
   assert.equal(patch.details.engine, "tgrep");
-  assert.equal(patch.details.command, `cat f | tgrep search --index-path '${IDX_PATH}' -n needle src | wc -l`);
+  assert.equal(patch.details.command, `cat f | tgrep search --index-path '${IDX_PATH}' --hidden -n needle src | wc -l`);
   assert.equal(patch.details.original, "cat f | grep -n needle src | wc -l");
   assert.equal(patch.details.fullOutputPath, "/tmp/out.txt", "existing bash details must be preserved");
   console.log("pipeline stamp ok");
@@ -118,17 +118,17 @@ test("blocked bash commands leave no stamp", async () => {
 test("compound command stamps the rewritten full command", async () => {
   const { event, res } = await toolCall("p6", "bash", { command: "grep foo .; rm x" });
   assert.equal(res, undefined, "compound with a translatable search part must not block");
-  assert.equal(event.input.command, `tgrep search --index-path '${IDX_PATH}' foo .; rm x`);
+  assert.equal(event.input.command, `tgrep search --index-path '${IDX_PATH}' --hidden foo .; rm x`);
   const patch = await toolResult("p6", "bash", undefined);
   assert.deepEqual(patch, {
-    details: { engine: "tgrep", command: `tgrep search --index-path '${IDX_PATH}' foo .; rm x`, original: "grep foo .; rm x" },
+    details: { engine: "tgrep", command: `tgrep search --index-path '${IDX_PATH}' --hidden foo .; rm x`, original: "grep foo .; rm x" },
   });
   console.log("compound stamp ok");
 });
 
 test("non-bash watched rewrites do not stamp bash results", async () => {
   const { event } = await toolCall("p5", "ctx_execute", { language: "shell", code: "grep -rn foo src" });
-  assert.equal(event.input.code, `tgrep search --index-path '${IDX_PATH}' -n foo src`);
+  assert.equal(event.input.code, `tgrep search --index-path '${IDX_PATH}' --hidden -n foo src`);
   assert.equal(await toolResult("p5", "bash", undefined), undefined);
   console.log("non-bash unstamped ok");
 });
