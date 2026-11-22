@@ -204,9 +204,64 @@ async function pathKind(p: string): Promise<PathKind> {
   }
 }
 
-const NOT_VALID_REGEX_NOTICE = "[pi-tgrep] pattern is not a valid regex; searched literally";
+const NOT_VALID_REGEX_PREFIX = "[pi-tgrep] pattern is not a valid regex; searched ";
+const NOT_VALID_REGEX_NOTICE = `${NOT_VALID_REGEX_PREFIX}literally`;
 const REGEX_ERROR = /regex (parse )?error/i;
 const MAX_LISTED_ENTRIES = 20;
+
+/** Index of the `]` closing the class that opens at `start`, or -1 when it is never closed. */
+function classEnd(pattern: string, start: number): number {
+  let i = start + 1;
+  if (pattern[i] === "^") i++;
+  if (pattern[i] === "]") i++;
+  while (i < pattern.length) {
+    if (pattern[i] === "\\") i += 2;
+    else if (pattern.startsWith("[:", i) && pattern.indexOf(":]", i + 2) >= 0) i = pattern.indexOf(":]", i + 2) + 2;
+    else if (pattern[i] === "]") return i;
+    else i++;
+  }
+  return -1;
+}
+
+/** Escapes only what makes a regex invalid: unbalanced parens, an unclosed `[`, and braces that are not a quantifier. */
+export function repairRegex(pattern: string): string {
+  const out: string[] = [];
+  const openGroups: number[] = [];
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i] as string;
+    if (ch === "\\") {
+      out.push(pattern.slice(i, i + 2));
+      i += 2;
+    } else if (ch === "[") {
+      const end = classEnd(pattern, i);
+      out.push(end < 0 ? "\\[" : pattern.slice(i, end + 1));
+      i = end < 0 ? i + 1 : end + 1;
+    } else if (ch === "(") {
+      openGroups.push(out.length);
+      out.push(ch);
+      i++;
+    } else if (ch === ")") {
+      out.push(openGroups.pop() === undefined ? "\\)" : ch);
+      i++;
+    } else if (ch === "{" || ch === "}") {
+      const quantifier = ch === "{" ? /^\{\d+(,\d*)?\}/.exec(pattern.slice(i))?.[0] : undefined;
+      const previous = out[out.length - 1];
+      if (quantifier && previous !== undefined && previous !== "(" && previous !== "|") {
+        out.push(quantifier);
+        i += quantifier.length;
+      } else {
+        out.push(`\\${ch}`);
+        i++;
+      }
+    } else {
+      out.push(ch);
+      i++;
+    }
+  }
+  for (const index of openGroups) out[index] = "\\(";
+  return out.join("");
+}
 
 /** Models often pass several paths as one whitespace-separated string; split it only when every token exists. */
 async function resolveSearchPaths(cwd: string, rawPath: string | undefined): Promise<SearchPaths | { missing: string }> {
@@ -314,14 +369,28 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
       let outcome = await runSearch(bin, params, searchPaths, ctx.cwd, effectiveLimit, signal, spawnIndex);
       if (outcome.aborted) throw new Error("Operation aborted");
       let regexFallback = false;
+      let repairedPattern: string | undefined;
       if (outcome.code === 2 && !params.literal && REGEX_ERROR.test(outcome.stderr)) {
-        const literalOutcome = await runSearch(bin, { ...params, literal: true }, searchPaths, ctx.cwd, effectiveLimit, signal, spawnIndex);
-        if (literalOutcome.aborted) throw new Error("Operation aborted");
-        if (!searchFailed(literalOutcome)) {
-          outcome = literalOutcome;
-          regexFallback = true;
+        const repaired = repairRegex(params.pattern);
+        if (repaired !== params.pattern) {
+          const repairedOutcome = await runSearch(bin, { ...params, pattern: repaired }, searchPaths, ctx.cwd, effectiveLimit, signal, spawnIndex);
+          if (repairedOutcome.aborted) throw new Error("Operation aborted");
+          if (!searchFailed(repairedOutcome) && repairedOutcome.matchCount > 0) {
+            outcome = repairedOutcome;
+            regexFallback = true;
+            repairedPattern = repaired;
+          }
+        }
+        if (!regexFallback) {
+          const literalOutcome = await runSearch(bin, { ...params, literal: true }, searchPaths, ctx.cwd, effectiveLimit, signal, spawnIndex);
+          if (literalOutcome.aborted) throw new Error("Operation aborted");
+          if (!searchFailed(literalOutcome)) {
+            outcome = literalOutcome;
+            regexFallback = true;
+          }
         }
       }
+      const regexNotice = repairedPattern === undefined ? NOT_VALID_REGEX_NOTICE : `${NOT_VALID_REGEX_PREFIX}as ${repairedPattern}`;
       if (searchFailed(outcome)) {
         const failure = describeSearchFailure(outcome);
         const fallback = await delegateToBuiltin({ reason: "error", message: failure });
@@ -356,10 +425,11 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
 
       const details: Record<string, unknown> = { engine: "tgrep" };
       if (regexFallback) details.regexFallback = true;
+      if (repairedPattern !== undefined) details.repairedPattern = repairedPattern;
       if (searchPaths.length > 1) details.searchPaths = searchPaths;
 
       if (outcome.matchCount === 0) {
-        const text = regexFallback ? `No matches found\n\n${NOT_VALID_REGEX_NOTICE}` : "No matches found";
+        const text = regexFallback ? `No matches found\n\n${regexNotice}` : "No matches found";
         return { content: [{ type: "text", text }], details };
       }
 
@@ -380,7 +450,7 @@ export function createGrepToolOverride(pi: ExtensionAPI): ToolDefinition<typeof 
         details.linesTruncated = true;
       }
       if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
-      if (regexFallback) output += `\n\n${NOT_VALID_REGEX_NOTICE}`;
+      if (regexFallback) output += `\n\n${regexNotice}`;
 
       return { content: [{ type: "text", text: output }], details };
     },

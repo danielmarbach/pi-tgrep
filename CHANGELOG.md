@@ -10,6 +10,13 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+### Fixed
+
+- The `grep` tool no longer loses the intended alternation when a pattern like
+  `new HomeRenderer|HomeRenderer(` is not a valid regex: it first escapes only the invalid
+  characters and searches `new HomeRenderer|HomeRenderer\(`, and only then falls back to a fully
+  literal search. The notice now reads `searched as <repaired pattern>` in that case.
+
 ## [0.5.0] - 2026-10-16
 
 ### Added

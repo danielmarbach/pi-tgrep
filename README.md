@@ -180,9 +180,13 @@ The only additions are metadata: `details.engine: "tgrep" | "rg-fallback"`,
 
 The `grep` tool also recovers from common model mistakes, adding only notices and metadata:
 
-- **Invalid regex.** A pattern tgrep cannot compile (`Generate(`, `Handle(Foo|Bar`) is retried once
-  as a literal (`-F`) before the ripgrep fallback. The result ends with
-  `[pi-tgrep] pattern is not a valid regex; searched literally` and has `details.regexFallback: true`.
+- **Invalid regex.** A pattern tgrep cannot compile (`Generate(`, `new Foo|Foo(`) is first retried
+  once with only the invalid characters escaped (unbalanced parentheses, an unclosed `[`, braces
+  that are not a quantifier); the rest of the regex, such as the alternation, is kept. If that
+  finds matches, the result ends with `[pi-tgrep] pattern is not a valid regex; searched as <repaired>`
+  and has `details.regexFallback: true` and `details.repairedPattern`. Otherwise it is retried as a
+  literal (`-F`) before the ripgrep fallback, ending with
+  `[pi-tgrep] pattern is not a valid regex; searched literally`.
 - **Multiple paths in one string.** If `path` does not exist as written but every
   whitespace-separated token does (`"src tests"`), all of them are searched
   (`details.searchPaths`). Results are shown relative to the working directory.
