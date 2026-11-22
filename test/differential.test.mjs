@@ -141,6 +141,12 @@ const BATTERY = [
   { cmd: "grep -rc needle src", known: "grep -c lists files with a zero count; tgrep omits them" },
   { cmd: "rg -n needle secrets" },
   { cmd: "grep -rn needle secrets" },
+
+  // HOME points at the fixture while the battery runs, so ~ resolves to the repo root.
+  { cmd: "grep -rn needle ~/src/app.ts" },
+  { cmd: "grep -rn needle ~/build.log" },
+  { cmd: "cd ~/src && grep -rn needle app.ts" },
+  { cmd: "cd ~ && grep -rn needle src" },
 ];
 
 /** BRE patterns that must convert to tgrep's ERE without changing what grep matches, grouped by rule. */
@@ -298,6 +304,17 @@ function describeDiff(original, translated) {
 }
 
 async function runBattery(dir) {
+  const originalHome = process.env.HOME;
+  process.env.HOME = dir;
+  try {
+    return await compareBattery(dir);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+}
+
+async function compareBattery(dir) {
   const context = {
     indexPath: path.join(dir, ".tgrep"),
     cwd: dir,

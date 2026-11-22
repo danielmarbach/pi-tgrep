@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { breToEre } from "./bre.ts";
 import type { BashPolicyMode } from "./config.js";
@@ -257,9 +258,15 @@ function passThrough(t: Token): OutToken {
   return t.quoted ? { text: t.text } : { text: t.text, verbatim: true };
 }
 
+/** A positional word of a grep/rg command; `quoted` keeps a literal `"~/x"` apart from an expanding `~/x`. */
+interface Operand {
+  text: string;
+  quoted: boolean;
+}
+
 interface Translation {
   tokens: OutToken[];
-  positionals: string[];
+  positionals: Operand[];
   patternFlag: boolean;
   patterns: string[];
   engine: GrepEngine;
@@ -789,7 +796,7 @@ function expandShortFlags(
 
 function translateRg(tokens: Token[]): Translation | { error: string } {
   const out: OutToken[] = [];
-  const positionals: string[] = [];
+  const positionals: Operand[] = [];
   let patternFlag = false;
   let i = 0;
   while (i < tokens.length) {
@@ -797,7 +804,7 @@ function translateRg(tokens: Token[]): Translation | { error: string } {
     if (t.text === "--") {
       for (const rest of tokens.slice(i + 1)) {
         out.push(passThrough(rest));
-        positionals.push(rest.text);
+        positionals.push({ text: rest.text, quoted: rest.quoted });
       }
       return { tokens: out, positionals, patternFlag, patterns: [], engine: "ere" };
     }
@@ -838,7 +845,7 @@ function translateRg(tokens: Token[]): Translation | { error: string } {
       }
     } else {
       out.push(passThrough(t));
-      positionals.push(t.text);
+      positionals.push({ text: t.text, quoted: t.quoted });
     }
     i++;
   }
@@ -938,8 +945,8 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
     }
     i++;
   }
-  const positionals = positionalTokens.map((p) => p.text);
-  const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!] : [];
+  const positionals = positionalTokens.map((p) => ({ text: p.text, quoted: p.quoted }));
+  const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!.text] : [];
   for (const p of positionalTokens) out.push(passThrough(p));
   return { tokens: out, positionals, patternFlag, patterns, engine, recursive };
 }
@@ -984,6 +991,12 @@ function isNonSearchInvocation(bin: string, args: Token[]): boolean {
     if (flags.has(arg.text)) return true;
   }
   return false;
+}
+
+/** Bash tilde expansion for a word that is statically resolvable: an unquoted `~` or `~/…` becomes the home directory. */
+function expandLeadingTilde(operand: Operand): string {
+  if (operand.quoted || !(operand.text === "~" || operand.text.startsWith("~/"))) return operand.text;
+  return homedir() + operand.text.slice(1);
 }
 
 function isExistingNonDirectory(operand: string, cwd: string): boolean {
@@ -1031,13 +1044,15 @@ async function policySegment(
   if (translation.positionals.length < minPositionals) return { kind: "verbatim" };
   const rendered = ["tgrep", "search"];
   const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
-  const paths = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
+  const operands = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
+  const paths = operands.map((p) => p.text);
+  const resolvedPaths = operands.map(expandLeadingTilde);
   if (
     translation.recursive &&
     cwd !== undefined &&
     paths.length === 1 &&
     !translation.tokens.some((t) => t.text === "-H" || t.text === "-I") &&
-    isExistingNonDirectory(paths[0]!, cwd)
+    isExistingNonDirectory(resolvedPaths[0]!, cwd)
   ) {
     translation.tokens.unshift({ text: "-H" });
   }
@@ -1045,7 +1060,7 @@ async function policySegment(
   if (indexPath && !hasIndexPath && allPathsRelative) {
     rendered.push("--index-path", emitToken(indexPath, true));
   }
-  if (isIgnored && (await anyIgnored(paths, isIgnored))) rendered.push("--no-ignore-parent");
+  if (isIgnored && (await anyIgnored(resolvedPaths, isIgnored))) rendered.push("--no-ignore-parent");
   rendered.push(...translation.tokens.map((t) => renderOutToken(t)));
   const cmdText = [...prefixes, ...rendered].join(" ");
   return { kind: "rewrite", text: suffix ? `${cmdText} ${suffix.trim()}` : cmdText };
@@ -1071,9 +1086,11 @@ function cwdAfterCd(part: string, cwd: Cwd): Cwd | undefined {
   // Under if/then/do the cd runs conditionally or repeatedly, so where the shell ends up is unknown.
   if (cd > 0 && tokens[cd - 1]!.text !== "{") return null;
   const target = tokens[cd + 1];
-  if (tokens.length !== cd + 2 || !target || target.expansion || /^[-~]/.test(target.text)) return null;
-  if (path.isAbsolute(target.text)) return target.text;
-  return cwd === null ? null : path.resolve(cwd, target.text);
+  if (tokens.length !== cd + 2 || !target || target.expansion) return null;
+  const text = expandLeadingTilde(target);
+  if (/^[-~]/.test(text)) return null;
+  if (path.isAbsolute(text)) return text;
+  return cwd === null ? null : path.resolve(cwd, text);
 }
 
 function isGrepFamilyCommand(part: string): boolean {

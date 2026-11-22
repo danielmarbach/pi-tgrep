@@ -16,6 +16,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   `new HomeRenderer|HomeRenderer(` is not a valid regex: it first escapes only the invalid
   characters and searches `new HomeRenderer|HomeRenderer\(`, and only then falls back to a fully
   literal search. The notice now reads `searched as <repaired pattern>` in that case.
+- `cd ~` / `cd ~/proj && grep …` is now translated against the index of that directory instead of
+  running unchanged, and `grep -r pattern ~/file.txt` keeps the `file:` prefix on every match.
 
 ## [0.5.0] - 2026-10-16
 

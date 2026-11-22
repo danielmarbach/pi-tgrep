@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { applyBashPolicy } from "../src/bash-policy.ts";
 
 async function policyCase(command, mode, expect, context) {
@@ -395,9 +398,63 @@ async function runCdTrackingTests() {
     command: 'cd "$D"\ncd /abs\ntgrep search --index-path \'/abs/.tgrep\' -n a src',
   }, resolver);
   await policyCase('cd "$D"\ngrep -rn a src', "block", { action: "block" }, resolver);
-  // ~ and bare cd can't be resolved statically either.
-  await policyCase("cd ~/proj && grep -rn a src", "translate", { action: "allow" }, resolver);
+  // bare cd, cd -, and another user's home can't be resolved statically.
+  await policyCase("cd && grep -rn a src", "translate", { action: "allow" }, resolver);
+  await policyCase("cd - && grep -rn a src", "translate", { action: "allow" }, resolver);
   console.log("cd tracking tests ok");
+}
+
+async function runTildeTests() {
+  const originalHome = process.env.HOME;
+  const home = await mkdtemp(path.join(tmpdir(), "pi-tgrep-home-"));
+  process.env.HOME = home;
+  try {
+    await writeFile(path.join(home, "file.txt"), "foo\n");
+    const answersFor = (dir) => ({
+      cwd: "/base",
+      resolveIndex: async (cwd) => (cwd === dir ? `${cwd}/.tgrep` : undefined),
+    });
+    // An unquoted leading ~ is followed by cd and the index is resolved for the expanded directory.
+    await policyCase("cd ~/proj && grep -rn foo src", "translate", {
+      action: "rewrite",
+      command: `cd ~/proj && tgrep search --index-path '${home}/proj/.tgrep' -n foo src`,
+    }, answersFor(`${home}/proj`));
+    await policyCase("cd ~ && grep -rn foo src", "translate", {
+      action: "rewrite",
+      command: `cd ~ && tgrep search --index-path '${home}/.tgrep' -n foo src`,
+    }, answersFor(home));
+    await policyCase("cd ~/proj\ngrep -rn foo src", "translate", {
+      action: "rewrite",
+      command: `cd ~/proj\ntgrep search --index-path '${home}/proj/.tgrep' -n foo src`,
+    }, answersFor(`${home}/proj`));
+    // ~user, a quoted ~, and a ~ that isn't leading are not expanded statically.
+    await policyCase("cd ~someone && grep -rn foo src", "translate", { action: "allow" }, answersFor(`${home}/proj`));
+    await policyCase('cd "~/proj" && grep -rn foo src', "translate", { action: "allow" }, answersFor(`${home}/proj`));
+    // A single file operand under ~ still prints its name, as grep -r does for the real path.
+    await policyCase("grep -rn foo ~/file.txt", "translate", {
+      action: "rewrite",
+      command: "tgrep search -H -n foo ~/file.txt",
+    }, { indexPath: "/repo/.tgrep" });
+    await policyCase('grep -rn foo "~/file.txt"', "translate", {
+      action: "rewrite",
+      command: "tgrep search -n foo '~/file.txt'",
+    }, { indexPath: "/repo/.tgrep" });
+    // The ignored-path check sees the expanded path.
+    const checked = [];
+    await policyCase("grep -rn foo ~/file.txt", "translate", {
+      action: "rewrite",
+      command: "tgrep search --no-ignore-parent -H -n foo ~/file.txt",
+    }, {
+      indexPath: "/repo/.tgrep",
+      isIgnored: async (cwd, operand) => (checked.push(operand), true),
+    });
+    assert.deepEqual(checked, [`${home}/file.txt`]);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    await rm(home, { recursive: true, force: true });
+  }
+  console.log("tilde tests ok");
 }
 
 await runShellExpansionAllowTests();
@@ -410,6 +467,7 @@ await runOrSeparatorTests();
 await runHeredocTests();
 await runMultiLineTests();
 await runCdTrackingTests();
+await runTildeTests();
 await runReviewRegressionTests();
 await runKeywordPrefixTests();
 console.log("ALL BLOCK TESTS PASSED");

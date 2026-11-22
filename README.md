@@ -50,7 +50,9 @@ path into the fast one and closes the side doors.
      empty result is never mistaken for a block;
    - the index directory is resolved for the directory each grep actually runs in — the
      session cwd, followed through any `cd` in the command or script — so
-     `cd /other/repo && grep …` searches that repo's index, not the session repo's; when a
+     `cd /other/repo && grep …` searches that repo's index, not the session repo's (an unquoted
+     `cd ~` or `cd ~/proj` is followed too, and a `~/` operand is resolved against `$HOME`; the
+     emitted command keeps the `~` so the shell still expands it); when a
      valid index directory exists, translated commands whose positional paths are all
      relative get `--index-path '<index dir>'` injected (any absolute positional, or an
      explicit `--index-path`, skips the injection); without an index the `search` scans the
