@@ -17,6 +17,19 @@ async function jsCase(code, expect) {
   return r;
 }
 
+// The translated literal must evaluate to the expected shell command, not merely look right.
+async function literalCase(literal, expectedCommand, { prefix = "execSync(", suffix = ", {cwd:R});" } = {}) {
+  const code = prefix + literal + suffix;
+  const input = { language: "javascript", code };
+  const r = await applyToolCallPolicy("ctx_execute", input, "translate", watched, IDX);
+  assert.equal(r.action, "rewrite", `code: ${code}`);
+  assert.ok(input.code.startsWith(prefix) && input.code.endsWith(suffix), `surroundings intact: ${input.code}`);
+  const newLiteral = input.code.slice(prefix.length, input.code.length - suffix.length);
+  assert.equal(new Function("return " + newLiteral)(), expectedCommand, `code: ${code}`);
+  assert.equal(newLiteral[0], literal[0], `quote style kept: ${input.code}`);
+  return input.code;
+}
+
 async function run() {
   // RegExp.prototype.exec on a variable whose first arg can't be extracted, and no child_process
   // reference anywhere: the member call is never treated as a child_process call.
@@ -59,6 +72,47 @@ async function run() {
     action: "rewrite",
     code: "require('child_process').execSync(`tgrep search --index-path '/repo/.tgrep' -n foo src`);",
   });
+
+  // Single-quoted and escaped literals are decoded, translated, and re-encoded in the same quote style.
+  await literalCase(
+    String.raw`'grep -rn "downloadbutton" src --include=*.cs | head -20'`,
+    "tgrep search --index-path '/repo/.tgrep' -n -g '*.cs' downloadbutton src | head -20",
+  );
+  await literalCase(
+    String.raw`'grep -n "Minif\\|minif" src/a.cs'`,
+    "tgrep search --index-path '/repo/.tgrep' -n 'Minif|minif' src/a.cs",
+  );
+  await literalCase(
+    String.raw`"grep -rln 'GetAwaiter\\.GetResult\\|\\.Result\\|\\.Wait()' test/ --include='*.cs' | grep -v obj | grep -v bin"`,
+    "tgrep search --index-path '/repo/.tgrep' -l -n -g '*.cs' 'GetAwaiter\\.GetResult|\\.Result|\\.Wait\\(\\)' test/ | grep -v obj | grep -v bin",
+  );
+  await literalCase(
+    "`" + String.raw`rg -l 'inputSchema:\\s*\\{' src/tools/` + "`",
+    "tgrep search --index-path '/repo/.tgrep' -l 'inputSchema:\\s*\\{' src/tools/",
+  );
+  await literalCase(
+    String.raw`"grep -rn \"foo bar\" src"`,
+    "tgrep search --index-path '/repo/.tgrep' -n 'foo bar' src",
+  );
+  await literalCase(
+    String.raw`'grep -rn \'foo bar\' src'`,
+    "tgrep search --index-path '/repo/.tgrep' -n 'foo bar' src",
+  );
+  await literalCase(
+    String.raw`'grep -rn \x66o\u006f src\u{2f}app'`,
+    "tgrep search --index-path '/repo/.tgrep' -n foo src/app",
+  );
+  await literalCase(
+    String.raw`'grep -rn foo \
+src\nls -la'`,
+    "tgrep search --index-path '/repo/.tgrep' -n foo src\nls -la",
+  );
+
+  // argv form: the first argument is just the program name, which runs unchanged.
+  await jsCase("const cp = require('child_process'); cp.execFileSync('rg',['--files','-g','!**/bin/**']);", {
+    action: "allow",
+  });
+  await jsCase("require('child_process').spawnSync(\"grep\", ['-rn', 'foo', 'src']);", { action: "allow" });
 
   // Bare destructured execSync stays guarded as today even though the arg is a variable, because
   // FAMILY_PATTERN matches elsewhere in the code (the literal grep command assigned to cmd).

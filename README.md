@@ -76,12 +76,14 @@ path into the fast one and closes the side doors.
      or here-string (`<<`, `<<<`) runs unchanged since `tgrep search` doesn't read stdin;
    - non-shell `ctx_execute`/`ctx_execute_file` code (e.g. JavaScript) is scanned for
      `child_process` exec/spawn calls (`exec`, `execSync`, `execFile`, `execFileSync`,
-     `spawn`, `spawnSync`): an embedded shell grep inside a backtick template or
-     double-quoted string is translated in place, while single-quoted, escaped, interpolated,
-     or statically unextractable commands are blocked, so `execSync('grep -rn …')` can no
-     longer bypass the index; member calls only count when the receiver is bound to
-     `child_process` (so `regex.exec(line)` is left alone), and an unextractable command only
-     blocks when the code mentions grep;
+     `spawn`, `spawnSync`): the string literal (single-quoted, double-quoted, or a backtick
+     template) is decoded (`\\|`, `\'`, `\n`, `\xHH`, `\uHHHH`, …), translated in place and
+     re-encoded in the same quote style, so `execSync('grep -rn …')` can no longer bypass the
+     index; interpolated or statically unextractable commands are blocked; argv-form calls
+     (`execFileSync('rg', ['--files', …])`) pass only the program name, which runs unchanged;
+     member calls only count when the receiver is bound to `child_process` (so
+     `regex.exec(line)` is left alone), and an unextractable command only blocks when the code
+     mentions grep;
    - `ctx_batch_execute` entries are checked individually (the entry's label appears in block
      reasons);
    - output-side redirects are preserved with fd numbers still glued to their redirect

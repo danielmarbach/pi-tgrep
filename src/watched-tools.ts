@@ -1,4 +1,5 @@
 import type { BashPolicyMode } from "./config.ts";
+import { decodeJsStringContent, encodeJsStringContent, scanJsStringLiteral } from "./js-strings.ts";
 import { applyBashPolicy, BLOCK_REASON, FAMILY_PATTERN, type PolicyContext } from "./bash-policy.ts";
 
 export const DEFAULT_WATCHED_TOOLS = ["bash", "ctx_execute", "ctx_execute_file", "ctx_batch_execute"];
@@ -36,33 +37,6 @@ function isChildProcessReceiver(receiver: string, bound: Set<string>): boolean {
   return bound.has(receiver) || CHILD_PROCESS_REQUIRE_CALL.test(receiver);
 }
 
-interface JsStringArg {
-  quote: string;
-  content: string;
-  contentStart: number;
-  contentEnd: number;
-}
-
-function parseJsFirstStringArg(code: string, from: number): JsStringArg | null {
-  let i = from;
-  while (i < code.length && /\s/.test(code[i]!)) i++;
-  const quote = code[i];
-  if (quote !== "'" && quote !== '"' && quote !== "`") return null;
-  let j = i + 1;
-  while (j < code.length) {
-    const c = code[j]!;
-    if (c === "\\") {
-      j += 2;
-      continue;
-    }
-    if (c === quote) {
-      return { quote, content: code.slice(i + 1, j), contentStart: i + 1, contentEnd: j };
-    }
-    j++;
-  }
-  return null;
-}
-
 async function applyJsChildProcessGuard(code: string, mode: BashPolicyMode, context?: PolicyContext): Promise<ToolPolicyAction> {
   const bound = boundChildProcessIdentifiers(code);
   const calls = [...code.matchAll(JS_EXEC_CALL)];
@@ -73,46 +47,41 @@ async function applyJsChildProcessGuard(code: string, mode: BashPolicyMode, cont
     const fn = call[2]!;
     // Member calls (X.exec(…)) are only child_process calls when X is bound to the module; bare calls stay guarded.
     if (receiver !== undefined && !isChildProcessReceiver(receiver, bound)) continue;
-    const parse = parseJsFirstStringArg(code, call.index + call[0].length);
-    if (!parse) {
-        if (!FAMILY_PATTERN.test(code)) continue;
-        return {
-          action: "block",
-          reason: `${BLOCK_REASON} The command passed to ${fn}() could not be extracted statically, and shell grep inside JavaScript bypasses the tgrep index. Use the grep tool instead.`,
-        };
-      }
-      if (!FAMILY_PATTERN.test(parse.content)) continue;
-      if (parse.content.includes("\\")) {
-        return {
-          action: "block",
-          reason: `${BLOCK_REASON} The grep command inside ${fn}() contains escape sequences that cannot be rewritten safely in place; shell grep inside JavaScript bypasses the tgrep index.`,
-        };
-      }
-      if (parse.quote === "'") {
-        return {
-          action: "block",
-          reason: `${BLOCK_REASON} The grep command is single-quoted inside JavaScript and cannot be rewritten in place; shell grep inside JavaScript bypasses the tgrep index.`,
-        };
-      }
-      if (parse.quote === "`" && parse.content.includes("${")) {
-        return {
-          action: "block",
-          reason: `${BLOCK_REASON} The grep command uses template interpolation and cannot be rewritten safely; shell grep inside JavaScript bypasses the tgrep index.`,
-        };
-      }
-      const result = await applyBashPolicy(parse.content, mode, context);
-      if (result.action === "block") {
-        return {
-          action: "block",
-          reason: `${result.reason} (embedded in JavaScript ${fn}(); shell grep inside JavaScript bypasses the tgrep index)`,
-        };
-      }
-      if (result.action === "rewrite") {
-        code = code.slice(0, parse.contentStart) + result.command + code.slice(parse.contentEnd);
-        changed = true;
-      }
+    let argStart = call.index + call[0].length;
+    while (argStart < code.length && /\s/.test(code[argStart]!)) argStart++;
+    const literal = scanJsStringLiteral(code, argStart);
+    const content = literal && code.slice(literal.contentStart, literal.contentEnd);
+    if (literal && literal.quote === "`" && content!.includes("${")) {
+      return {
+        action: "block",
+        reason: `${BLOCK_REASON} The grep command uses template interpolation and cannot be rewritten safely; shell grep inside JavaScript bypasses the tgrep index.`,
+      };
     }
-    return changed ? { action: "rewrite", code } : { action: "allow" };
+    const command = content === null ? null : decodeJsStringContent(content!);
+    if (literal === null || command === null) {
+      if (!FAMILY_PATTERN.test(code)) continue;
+      return {
+        action: "block",
+        reason: `${BLOCK_REASON} The command passed to ${fn}() could not be extracted statically, and shell grep inside JavaScript bypasses the tgrep index. Use the grep tool instead.`,
+      };
+    }
+    if (!FAMILY_PATTERN.test(command)) continue;
+    const result = await applyBashPolicy(command, mode, context);
+    if (result.action === "block") {
+      return {
+        action: "block",
+        reason: `${result.reason} (embedded in JavaScript ${fn}(); shell grep inside JavaScript bypasses the tgrep index)`,
+      };
+    }
+    if (result.action === "rewrite") {
+      code =
+        code.slice(0, literal.contentStart) +
+        encodeJsStringContent(result.command, literal.quote) +
+        code.slice(literal.contentEnd);
+      changed = true;
+    }
+  }
+  return changed ? { action: "rewrite", code } : { action: "allow" };
 }
 
 export async function applyToolCallPolicy(

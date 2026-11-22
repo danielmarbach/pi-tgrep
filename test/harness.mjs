@@ -413,8 +413,8 @@ async function runWatchedToolsTests() {
 
   input = { language: "javascript", code: "execSync('grep -rn foo .');" };
   r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
-  assert.equal(r.action, "block");
-  assert.match(r.reason ?? "", /bypasses the tgrep index/);
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "execSync('tgrep search -n foo .');");
 
   input = { language: "javascript", code: "execSync('ls -la');" };
   r = await applyToolCallPolicy("ctx_execute", input, "translate", watched);
@@ -434,7 +434,8 @@ async function runWatchedToolsTests() {
 
   input = { language: "javascript", code: "const out = spawnSync('grep -rn foo .');" };
   r = await applyToolCallPolicy("ctx_execute_file", input, "translate", watched);
-  assert.equal(r.action, "block");
+  assert.equal(r.action, "rewrite");
+  assert.equal(input.code, "const out = spawnSync('tgrep search -n foo .');");
 
   console.log("watched tools tests ok");
 }

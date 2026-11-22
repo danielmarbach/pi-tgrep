@@ -32,6 +32,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   `git: 'tgrep' is not a git command`. A `$(…)` inside double quotes
   (`echo "n: $(grep -c x f)"`) is judged like any other substitution instead of having its
   quotes end the string.
+- `grep`/`rg` commands inside single-quoted or backslash-escaped JavaScript strings passed to
+  `exec`/`execSync` in `ctx_execute` are now translated to `tgrep search` instead of being
+  blocked, and argv-style calls such as `execFileSync('rg', ['--files', …])` run unchanged.
 
 ## [0.5.0] - 2026-10-16
 
