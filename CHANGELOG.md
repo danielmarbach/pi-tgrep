@@ -10,6 +10,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-22
+
 ### Fixed
 
 - The `grep` tool no longer loses the intended alternation when a pattern like
