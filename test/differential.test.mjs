@@ -63,9 +63,12 @@ const EXTRA_FILES = {
   ].join("\n"),
   "src/nested/deep.ts": "export const needle = 1;\nexport const NEEDLE = 2;\n",
   "docs/notes.txt": "plain notes\nneedle in notes\n",
+  "docs/flags.md": "run it with --agent-cmd shell\nor -n alone\n",
   "App.sln": 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App.csproj", "{GUID}"\nEndProject\n',
   "build.log": "needle in an ignored log\n",
   "secrets/key.txt": "needle in an ignored dir\n",
+  ".github/workflows/ci.yml": "steps:\n  - run: echo needle\n",
+  ".hidden-notes.md": "needle in a dotfile\n",
 };
 
 /**
@@ -124,6 +127,10 @@ const BATTERY = [
   { cmd: "grep -rn -m1 needle src" },
   { cmd: "grep -n needle src/app.ts" },
   { cmd: "grep -c needle src/app.ts" },
+  { cmd: "grep -c zzzznomatch src/app.ts" },
+  { cmd: "grep -c needle src/app.ts src/util.ts" },
+  { cmd: "grep -c needle src/app.ts src/Sample.cs" },
+  { cmd: "grep -c needle src/Sample.cs src/app.ts" },
   { cmd: "grep -n needle src/app.ts src/util.ts" },
   { cmd: "grep -n needle src/*.ts" },
   { cmd: "grep -rn zzzznomatch src" },
@@ -136,11 +143,44 @@ const BATTERY = [
 
   { cmd: "grep -rn needle src/app.ts" },
   { cmd: "grep -rc needle src/app.ts" },
+  { cmd: "grep -rn needle src/nested/*.ts" },
+  { cmd: "grep -rn foo src/*.cs" },
   { cmd: "grep -rn needle build.log" },
   { cmd: "grep -rn needle .", known: "grep does not read .gitignore; tgrep skips ignored files (by design)" },
-  { cmd: "grep -rc needle src", known: "grep -c lists files with a zero count; tgrep omits them" },
+  { cmd: "grep -rc needle src" },
+  { cmd: "grep -n needle -n src/app.ts" },
+  { cmd: "grep -rn -i NEEDLE -i docs" },
+  { cmd: "grep -rln --files-with-matches needle src docs" },
+  { cmd: "grep -rn -A1 -A2 needle docs" },
+  { cmd: "grep -rn -m1 -m2 needle src" },
+  { cmd: "rg -n --line-number needle src" },
+  { cmd: "rg -C1 -C2 needle docs" },
+  { cmd: "grep -rn needle .github" },
+  { cmd: "grep -rn --include='*.yml' needle ." },
+  { cmd: "grep -rl --include='*.md' needle ." },
+  { cmd: "grep -n needle .hidden-notes.md" },
   { cmd: "rg -n needle secrets" },
+  // `--` ends the options, so a pattern that starts with a dash stays a pattern.
+  { cmd: "grep -rn -- '--agent-cmd' docs" },
+  { cmd: "grep -nF -- '--agent-cmd shell' docs/flags.md" },
+  { cmd: "grep -n -- -n docs/flags.md" },
+  { cmd: "rg -n -- --agent-cmd docs" },
   { cmd: "grep -rn needle secrets" },
+
+  // HOME points at the fixture while the battery runs, so ~ resolves to the repo root.
+  { cmd: "grep -rn needle ~/src/app.ts" },
+  { cmd: "grep -rn needle ~/build.log" },
+  { cmd: "cd ~/src && grep -rn needle app.ts" },
+  { cmd: "cd ~ && grep -rn needle src" },
+  // No path operand: rg and grep -r search the working directory.
+  { cmd: "rg -n needle" },
+  { cmd: "rg -l needle -g '*.ts'" },
+  { cmd: "grep -rn --include='*.ts' needle" },
+  { cmd: "grep -rl needle --include=*.md" },
+  {
+    cmd: "grep -rl needle --include=*.txt",
+    known: "grep does not read .gitignore; tgrep skips ignored files (by design)",
+  },
 ];
 
 /** BRE patterns that must convert to tgrep's ERE without changing what grep matches, grouped by rule. */
@@ -257,6 +297,10 @@ BATTERY.push(
 );
 for (const pattern of BRE_CONVERTIBLE) BATTERY.push({ cmd: `grep -rn '${pattern}' src --include='*.cs'` });
 for (const pattern of BRE_UNCONVERTIBLE) BATTERY.push({ cmd: `grep -rn '${pattern}' src --include='*.cs'`, verbatim: true });
+// POSIX reads a backslash inside an ERE bracket literally, tgrep's engine reads it as an escape.
+for (const pattern of ['"[A-Za-z0-9_.\\-]+"', "static [A-Za-z<>\\[\\]]+ ", "[a-z\\-]bar"]) {
+  BATTERY.push({ cmd: `grep -rnE '${pattern}' src --include='*.cs'`, verbatim: true });
+}
 
 function which(bin) {
   const found = spawnSync("which", [bin], { encoding: "utf8" });
@@ -268,7 +312,8 @@ function missingTools() {
 }
 
 function runShell(command, cwd) {
-  const r = spawnSync("bash", ["-c", command], { cwd, encoding: "utf8", timeout: 30_000 });
+  // Like pi's bash tool, stdin is not a pipe, so a path-less rg searches the directory instead of reading stdin.
+  const r = spawnSync("bash", ["-c", command], { cwd, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
   const lines = (r.stdout ?? "").split("\n").filter((line) => line !== "");
   // Output order is not part of the contract: tgrep and grep -r walk directories differently.
   return { lines: lines.sort(), code: r.status };
@@ -298,6 +343,17 @@ function describeDiff(original, translated) {
 }
 
 async function runBattery(dir) {
+  const originalHome = process.env.HOME;
+  process.env.HOME = dir;
+  try {
+    return await compareBattery(dir);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+}
+
+async function compareBattery(dir) {
   const context = {
     indexPath: path.join(dir, ".tgrep"),
     cwd: dir,

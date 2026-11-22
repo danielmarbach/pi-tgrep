@@ -1,6 +1,7 @@
-import { statSync } from "node:fs";
+import { globSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
-import { breToEre } from "./bre.ts";
+import { breToEre, ereBracketsPortable } from "./bre.ts";
 import type { BashPolicyMode } from "./config.js";
 
 export interface PolicyContext {
@@ -141,6 +142,57 @@ const RG_LONG_SPECS: Record<`--${string}`, RgLongSpec> = {
   "--ignore-file": { kind: "arg" }, "--threads": { kind: "arg" }, "--colors": { kind: "arg" },
 };
 
+/** Long and short spellings of one rg/tgrep flag; clap rejects the same flag given twice. */
+const FLAG_ALIASES: Record<string, string> = {
+  "--ignore-case": "-i", "--case-sensitive": "-s", "--smart-case": "-S", "--fixed-strings": "-F",
+  "--word-regexp": "-w", "--invert-match": "-v", "--multiline": "-U", "--files-with-matches": "-l",
+  "--files-without-match": "-L", "--count": "-c", "--only-matching": "-o", "--quiet": "-q",
+  "--text": "-a", "--with-filename": "-H", "--no-filename": "-I", "--line-number": "-n",
+  "--no-line-number": "-N", "--pretty": "-p", "--byte-offset": "-b", "--line-regexp": "-x",
+  "--null": "-0", "--pcre2": "-P", "--after-context": "-A", "--before-context": "-B",
+  "--context": "-C", "--max-count": "-m", "--max-columns": "-M", "--encoding": "-E",
+  "--threads": "-j", "--replace": "-r",
+  "--regexp": "-e", "--file": "-f", "--glob": "-g", "--type": "-t", "--type-not": "-T",
+};
+
+/** Value flags tgrep accepts more than once; every other repeated flag is a usage error. */
+const REPEATABLE_FLAGS = new Set(["-e", "-f", "-g", "-t", "-T", "--iglob", "--type-add", "--type-clear"]);
+
+function flagTakesValue(name: string): boolean {
+  return name.startsWith("--") ? RG_LONG_SPECS[name as `--${string}`]?.kind === "arg" : RG_SHORT_SPECS[name.slice(1)]?.kind === "arg";
+}
+
+/** Collapses repeated flags: a value-less repeat is dropped, a repeated value flag keeps its last
+ * occurrence (grep and rg semantics). Tokens from `end` on are positionals and stay untouched. */
+function dedupeFlags(tokens: OutToken[], end = tokens.length): OutToken[] {
+  const groups: OutToken[][] = [];
+  const seen = new Map<string, number>();
+  for (let i = 0; i < end; i++) {
+    const head = tokens[i]!;
+    if (!head.text.startsWith("-") || head.text === "-") {
+      groups.push([head]);
+      continue;
+    }
+    const eq = head.text.startsWith("--") ? head.text.indexOf("=") : -1;
+    const name = eq === -1 ? head.text : head.text.slice(0, eq);
+    const takesValue = flagTakesValue(name);
+    const group = eq === -1 && takesValue && i + 1 < end ? [head, tokens[++i]!] : [head];
+    const key = FLAG_ALIASES[name] ?? name;
+    if (REPEATABLE_FLAGS.has(key)) {
+      groups.push(group);
+      continue;
+    }
+    const previous = seen.get(key);
+    if (previous !== undefined) {
+      if (!takesValue) continue;
+      groups[previous] = [];
+    }
+    seen.set(key, groups.length);
+    groups.push(group);
+  }
+  return [...groups.flat(), ...tokens.slice(end)];
+}
+
 type GrepShortSpec =
   | { kind: "emit"; to: string; engine?: GrepEngine }
   | { kind: "arg"; to: string }
@@ -234,7 +286,7 @@ const BACKREF_PATTERN = /\\[1-9]/;
 type GrepEngine = "fixed" | "ere" | "pcre" | "bre";
 
 function patternNeedsFallback(pattern: string, engine: GrepEngine): boolean {
-  return engine === "ere" && BACKREF_PATTERN.test(pattern);
+  return engine === "ere" && (BACKREF_PATTERN.test(pattern) || !ereBracketsPortable(pattern));
 }
 
 interface Token {
@@ -257,9 +309,15 @@ function passThrough(t: Token): OutToken {
   return t.quoted ? { text: t.text } : { text: t.text, verbatim: true };
 }
 
+/** A positional word of a grep/rg command; `quoted` keeps a literal `"~/x"` apart from an expanding `~/x`. */
+interface Operand {
+  text: string;
+  quoted: boolean;
+}
+
 interface Translation {
   tokens: OutToken[];
-  positionals: string[];
+  positionals: Operand[];
   patternFlag: boolean;
   patterns: string[];
   engine: GrepEngine;
@@ -317,10 +375,28 @@ function tokenizeDetailed(command: string): Token[] | null {
           quoted = true;
         }
       } else {
+        const sub = consumeExpansion(command, i, false);
+        if (sub === null) return null;
+        if (sub) {
+          current += command.slice(i, sub.end);
+          quoted = true;
+          expansion = true;
+          i = sub.end - 1;
+          continue;
+        }
         if ((c === "$" && EXPANSION_NEXT.test(command[i + 1] ?? "")) || c === "`") expansion = true;
         current += c;
         quoted = true;
       }
+      continue;
+    }
+    const sub = consumeExpansion(command, i, true);
+    if (sub === null) return null;
+    if (sub) {
+      current += command.slice(i, sub.end);
+      has = true;
+      expansion = true;
+      i = sub.end - 1;
       continue;
     }
     if (c === "$" && command[i + 1] === "'") {
@@ -375,8 +451,10 @@ interface ScannedCommand {
   blocks: (string | undefined)[];
   /** Heredoc bodies (terminator included); separators carry an opaque marker in their place. */
   heredocs: string[];
-  /** substitutions[i]: the `$(…)` / backtick bodies inside parts[i], in source order. */
+  /** substitutions[i]: the `$(…)` / backtick / `<(…)` / `>(…)` bodies inside parts[i], in source order. */
   substitutions: Substitution[][];
+  /** depths[i]: how many ( … ) subshell groups are open where parts[i] ends. */
+  depths: number[];
 }
 
 interface Substitution {
@@ -508,6 +586,51 @@ function consumeBacktickSubstitution(command: string, backtick: number): { end: 
   return null;
 }
 
+/** Consumes a `${ … }` parameter expansion starting at the index of its opening `{`. */
+function consumeBraceExpansion(command: string, openBrace: number): { end: number; body: string } | null {
+  let i = openBrace + 1;
+  let depth = 1;
+  while (i < command.length) {
+    const c = command[i]!;
+    if (c === "\\") {
+      i += 2;
+    } else if (c === "'") {
+      const close = command.indexOf("'", i + 1);
+      if (close === -1) return null;
+      i = close + 1;
+    } else if (c === '"') {
+      i++;
+      while (i < command.length && command[i] !== '"') i += command[i] === "\\" ? 2 : 1;
+      i++;
+    } else if (c === "$" && command[i + 1] === "(") {
+      const sub = consumeParenSubstitution(command, i + 1);
+      if (!sub) return null;
+      i = sub.end;
+    } else {
+      i++;
+      if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) return { end: i, body: command.slice(openBrace + 1, i - 1) };
+    }
+  }
+  return null;
+}
+
+/** The `$(…)`, `${…}`, backtick or (unquoted only) `<(…)` / `>(…)` expansion starting at `i`:
+ * undefined if none starts there, null if it is unterminated. */
+function consumeExpansion(
+  text: string,
+  i: number,
+  allowProcessSubstitution: boolean,
+): { end: number; body: string } | null | undefined {
+  const c = text[i];
+  const next = text[i + 1];
+  if (c === "`") return consumeBacktickSubstitution(text, i);
+  if (c === "$" && next === "(") return consumeParenSubstitution(text, i + 1);
+  if (c === "$" && next === "{") return consumeBraceExpansion(text, i + 1);
+  if (allowProcessSubstitution && (c === "<" || c === ">") && next === "(") return consumeParenSubstitution(text, i + 1);
+  return undefined;
+}
+
 function scanPipeline(command: string): ScanResult {
   const parts: string[] = [];
   const separators: string[] = [];
@@ -516,6 +639,8 @@ function scanPipeline(command: string): ScanResult {
   const heredocs: string[] = [];
   const substitutions: Substitution[][] = [];
   const pending: PendingHeredoc[] = [];
+  const depths: number[] = [];
+  let depth = 0;
   let current = "";
   let currentSubstitutions: Substitution[] = [];
   let currentStdinFed = false;
@@ -529,6 +654,7 @@ function scanPipeline(command: string): ScanResult {
     blocks.push(currentBlock);
     substitutions.push(currentSubstitutions);
     separators.push(separator);
+    depths.push(depth);
     current = "";
     currentSubstitutions = [];
     currentStdinFed = false;
@@ -548,6 +674,16 @@ function scanPipeline(command: string): ScanResult {
         if (next === undefined) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
         current += c + next;
         i += 2;
+        continue;
+      }
+      // A substitution inside double quotes has its own quoting, so its " doesn't end the string.
+      if ((c === "$" && command[i + 1] === "(") || c === "`") {
+        const backtick = c === "`";
+        const sub = backtick ? consumeBacktickSubstitution(command, i) : consumeParenSubstitution(command, i + 1);
+        if (!sub) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+        currentSubstitutions.push({ offset: current.length + (backtick ? 1 : 2), body: sub.body, backtick });
+        current += command.slice(i, sub.end);
+        i = sub.end;
         continue;
       }
       current += c;
@@ -620,13 +756,22 @@ function scanPipeline(command: string): ScanResult {
         i += 2;
         continue;
       }
-      // A single & backgrounds the whole && / || / | list before it, none of which can be translated.
+      // A single & backgrounds the whole && / || / | list before it, none of which can be translated;
+      // inside ( … ) that list starts at the group.
       currentBlock ??= BACKGROUND_BLOCK_REASON;
-      for (let k = parts.length - 1; k >= 0 && !/^(;;?|\n)/.test(separators[k]!); k--) {
+      for (let k = parts.length - 1; k >= 0 && !/^(;;?|\n)/.test(separators[k]!) && depths[k]! >= depth; k--) {
         blocks[k] ??= BACKGROUND_BLOCK_REASON;
       }
       endPart("&");
       i++;
+      continue;
+    }
+    if ((c === "<" || c === ">") && command[i + 1] === "(") {
+      const sub = consumeParenSubstitution(command, i + 1);
+      if (!sub) return { kind: "block", reason: UNPARSEABLE_QUOTING_REASON };
+      currentSubstitutions.push({ offset: current.length + 2, body: sub.body, backtick: false });
+      current += command.slice(i, sub.end);
+      i = sub.end;
       continue;
     }
     if (c === "<") {
@@ -682,6 +827,8 @@ function scanPipeline(command: string): ScanResult {
       i += separator.length;
       continue;
     }
+    if (c === "(" && current.trim() === "") depth++;
+    else if (c === ")" && depth > 0) depth--;
     current += c;
     i++;
   }
@@ -689,7 +836,8 @@ function scanPipeline(command: string): ScanResult {
   stdinFed.push(currentStdinFed);
   blocks.push(currentBlock);
   substitutions.push(currentSubstitutions);
-  return { kind: "parts", parts, separators, stdinFed, blocks, heredocs, substitutions };
+  depths.push(depth);
+  return { kind: "parts", parts, separators, stdinFed, blocks, heredocs, substitutions, depths };
 }
 
 function splitRedirect(segment: string): { cmd: string; suffix: string } {
@@ -712,7 +860,12 @@ function splitRedirect(segment: string): { cmd: string; suffix: string } {
       i = end - 1;
     } else if (c === "'") inSingle = true;
     else if (c === '"') inDouble = true;
-    else if (c === "#" && (i === 0 || /\s/.test(segment[i - 1]!))) {
+    else if (consumeExpansion(segment, i, true) !== undefined) {
+      // A > inside a substitution belongs to it, not to this command.
+      const sub = consumeExpansion(segment, i, true);
+      if (!sub) break;
+      i = sub.end - 1;
+    } else if (c === "#" && (i === 0 || /\s/.test(segment[i - 1]!))) {
       // A comment runs to the end of the segment; a > inside it is not a redirect.
       return { cmd: segment.slice(0, i), suffix: segment.slice(i) };
     } else if (c === ">") {
@@ -748,6 +901,14 @@ function stripPrefixes(tokens: Token[]): { prefixes: string[]; rest: Token[]; ok
     ) {
       prefixes.push(renderPrefix(head));
       rest.shift();
+      continue;
+    }
+    // A subshell group opens with ( glued to its first command, as in `(grep -rn x src)`.
+    const opens = !head.quoted && !head.expansion ? /^\(+/.exec(head.text)?.[0] : undefined;
+    if (opens) {
+      prefixes.push(opens);
+      if (head.text.length > opens.length) rest[0] = { ...head, text: head.text.slice(opens.length) };
+      else rest.shift();
       continue;
     }
     if (head.text.startsWith("-")) return { prefixes, rest, ok: false };
@@ -789,17 +950,19 @@ function expandShortFlags(
 
 function translateRg(tokens: Token[]): Translation | { error: string } {
   const out: OutToken[] = [];
-  const positionals: string[] = [];
+  const positionals: Operand[] = [];
   let patternFlag = false;
   let i = 0;
   while (i < tokens.length) {
     const t = tokens[i]!;
     if (t.text === "--") {
+      const flagCount = out.length;
+      out.push({ text: "--" });
       for (const rest of tokens.slice(i + 1)) {
         out.push(passThrough(rest));
-        positionals.push(rest.text);
+        positionals.push({ text: rest.text, quoted: rest.quoted });
       }
-      return { tokens: out, positionals, patternFlag, patterns: [], engine: "ere" };
+      return { tokens: dedupeFlags(out, flagCount), positionals, patternFlag, patterns: [], engine: "ere" };
     }
     if (t.text.startsWith("--")) {
       const eq = t.text.indexOf("=");
@@ -838,25 +1001,29 @@ function translateRg(tokens: Token[]): Translation | { error: string } {
       }
     } else {
       out.push(passThrough(t));
-      positionals.push(t.text);
+      positionals.push({ text: t.text, quoted: t.quoted });
     }
     i++;
   }
-  return { tokens: out, positionals, patternFlag, patterns: [], engine: "ere" };
+  return { tokens: dedupeFlags(out), positionals, patternFlag, patterns: [], engine: "ere" };
 }
 
 function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translation | { error: string } {
-  const out: OutToken[] = [];
+  // grep never skips dotfiles or dot directories; tgrep does unless asked.
+  const out: OutToken[] = [{ text: "--hidden" }];
   const positionalTokens: Token[] = [];
   const ePatterns: string[] = [];
   let patternFlag = false;
   let recursive = false;
+  let endOfOptions = false;
+  let counting = false;
   let engine: GrepEngine = bin === "egrep" ? "ere" : bin === "fgrep" ? "fixed" : "bre";
   if (bin === "fgrep") out.push({ text: "-F" });
   let i = 0;
   while (i < tokens.length) {
     const t = tokens[i]!;
     if (t.text === "--") {
+      endOfOptions = true;
       positionalTokens.push(...tokens.slice(i + 1));
       break;
     }
@@ -871,6 +1038,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
         case "drop":
           if (spec.engine) engine = spec.engine;
           if (name === "--recursive" || name === "--dereference-recursive") recursive = true;
+          if (name === "--count") counting = true;
           if (spec.kind === "emit") out.push({ text: spec.to });
           break;
         case "arg": {
@@ -913,6 +1081,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
           const spec = GREP_SHORT_SPECS[ch];
           if (!spec) return null;
           if (ch === "r" || ch === "R") recursive = true;
+          if (ch === "c") counting = true;
           if (spec.kind !== "arg" && spec.engine) engine = spec.engine;
           return spec.kind === "emit" ? spec.to : "";
         },
@@ -938,10 +1107,14 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
     }
     i++;
   }
-  const positionals = positionalTokens.map((p) => p.text);
-  const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!] : [];
-  for (const p of positionalTokens) out.push(passThrough(p));
-  return { tokens: out, positionals, patternFlag, patterns, engine, recursive };
+  // grep -c prints 0 for files without a match; tgrep omits them unless asked.
+  if (counting) out.push({ text: "--include-zero" });
+  const positionals = positionalTokens.map((p) => ({ text: p.text, quoted: p.quoted }));
+  const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!.text] : [];
+  const flagTokens = dedupeFlags(out);
+  if (endOfOptions) flagTokens.push({ text: "--" });
+  for (const p of positionalTokens) flagTokens.push(passThrough(p));
+  return { tokens: flagTokens, positionals, patternFlag, patterns, engine, recursive };
 }
 
 /** Rewrites the BRE pattern tokens of a translation to ERE in place; false when one can't be converted. */
@@ -986,8 +1159,18 @@ function isNonSearchInvocation(bin: string, args: Token[]): boolean {
   return false;
 }
 
-function isExistingNonDirectory(operand: string, cwd: string): boolean {
-  const stats = statSync(path.resolve(cwd, operand), { throwIfNoEntry: false });
+/** Bash tilde expansion for a word that is statically resolvable: an unquoted `~` or `~/…` becomes the home directory. */
+function expandLeadingTilde(operand: Operand): string {
+  if (operand.quoted || !(operand.text === "~" || operand.text.startsWith("~/"))) return operand.text;
+  return homedir() + operand.text.slice(1);
+}
+
+/** Whether the operand names exactly one existing file once the shell expands `~` and glob characters. */
+function namesSingleFile(operand: Operand, cwd: string): boolean {
+  const resolved = expandLeadingTilde(operand);
+  const matches = !operand.quoted && /[*?[]/.test(resolved) ? globSync(resolved, { cwd }) : [resolved];
+  if (matches.length !== 1) return false;
+  const stats = statSync(path.resolve(cwd, matches[0]!), { throwIfNoEntry: false });
   return stats !== undefined && !stats.isDirectory();
 }
 
@@ -998,6 +1181,7 @@ async function policySegment(
   mode: BashPolicyMode,
   indexPath: string | undefined,
   stdinFed: boolean,
+  pipeFed: boolean,
   isIgnored: ((operand: string) => Promise<boolean>) | undefined,
   cwd: string | undefined,
 ): Promise<SegmentResult> {
@@ -1018,6 +1202,8 @@ async function policySegment(
   if (isNonSearchInvocation(bin, rest.slice(1))) return { kind: "verbatim" };
   const translation = bin === "rg" ? translateRg(rest.slice(1)) : translateGrep(bin, rest.slice(1));
   if ("error" in translation) {
+    // A grep reading a pipe runs as written, so an untranslatable flag costs nothing.
+    if (pipeFed) return { kind: "verbatim" };
     return {
       kind: "block",
       reason: blockReason(`${translation.error}: this flag has no tgrep translation; use the grep tool instead.`),
@@ -1027,17 +1213,25 @@ async function policySegment(
     return { kind: "verbatim" };
   }
   if (bin !== "rg" && translation.engine === "bre" && !convertBrePatterns(translation)) return { kind: "verbatim" };
-  const minPositionals = translation.patternFlag ? 1 : 2;
-  if (translation.positionals.length < minPositionals) return { kind: "verbatim" };
+  const hasPattern = translation.patternFlag || translation.positionals.length > 0;
+  const operands = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
+  if (!hasPattern) return { kind: "verbatim" };
+  if (operands.length === 0) {
+    // Without a path, rg and grep -r search the working directory; any other grep reads stdin.
+    if (pipeFed || (bin !== "rg" && !translation.recursive)) return { kind: "verbatim" };
+    // grep -r prints ./ before each file name, as tgrep does for an explicit `.`.
+    if (bin !== "rg") translation.tokens.push({ text: "." });
+  }
   const rendered = ["tgrep", "search"];
   const hasIndexPath = translation.tokens.some((t) => t.text.startsWith("--index-path"));
-  const paths = translation.patternFlag ? translation.positionals : translation.positionals.slice(1);
+  const paths = operands.map((p) => p.text);
+  const resolvedPaths = operands.map(expandLeadingTilde);
   if (
     translation.recursive &&
     cwd !== undefined &&
     paths.length === 1 &&
     !translation.tokens.some((t) => t.text === "-H" || t.text === "-I") &&
-    isExistingNonDirectory(paths[0]!, cwd)
+    namesSingleFile(operands[0]!, cwd)
   ) {
     translation.tokens.unshift({ text: "-H" });
   }
@@ -1045,7 +1239,13 @@ async function policySegment(
   if (indexPath && !hasIndexPath && allPathsRelative) {
     rendered.push("--index-path", emitToken(indexPath, true));
   }
-  if (isIgnored && (await anyIgnored(paths, isIgnored))) rendered.push("--no-ignore-parent");
+  if (
+    isIgnored &&
+    !translation.tokens.some((t) => t.text === "--no-ignore-parent") &&
+    (await anyIgnored(resolvedPaths.length > 0 ? resolvedPaths : ["."], isIgnored))
+  ) {
+    rendered.push("--no-ignore-parent");
+  }
   rendered.push(...translation.tokens.map((t) => renderOutToken(t)));
   const cmdText = [...prefixes, ...rendered].join(" ");
   return { kind: "rewrite", text: suffix ? `${cmdText} ${suffix.trim()}` : cmdText };
@@ -1065,15 +1265,22 @@ type Cwd = string | null;
 function cwdAfterCd(part: string, cwd: Cwd): Cwd | undefined {
   const tokens = tokenizeDetailed(splitRedirect(part).cmd);
   if (!tokens) return undefined;
+  const opens = tokens[0] && !tokens[0].quoted && !tokens[0].expansion ? /^\(+/.exec(tokens[0].text)?.[0] : undefined;
+  if (opens) {
+    if (tokens[0]!.text.length > opens.length) tokens[0] = { ...tokens[0]!, text: tokens[0]!.text.slice(opens.length) };
+    else tokens.shift();
+  }
   let cd = 0;
   while (tokens[cd] && !tokens[cd]!.quoted && KEYWORD_PREFIXES.has(tokens[cd]!.text)) cd++;
   if (tokens[cd]?.text !== "cd") return undefined;
   // Under if/then/do the cd runs conditionally or repeatedly, so where the shell ends up is unknown.
   if (cd > 0 && tokens[cd - 1]!.text !== "{") return null;
   const target = tokens[cd + 1];
-  if (tokens.length !== cd + 2 || !target || target.expansion || /^[-~]/.test(target.text)) return null;
-  if (path.isAbsolute(target.text)) return target.text;
-  return cwd === null ? null : path.resolve(cwd, target.text);
+  if (tokens.length !== cd + 2 || !target || target.expansion) return null;
+  const text = expandLeadingTilde(target);
+  if (/^[-~]/.test(text)) return null;
+  if (path.isAbsolute(text)) return text;
+  return cwd === null ? null : path.resolve(cwd, text);
 }
 
 function isGrepFamilyCommand(part: string): boolean {
@@ -1091,7 +1298,7 @@ function trailingSpace(text: string): string {
   return text.slice(text.trimEnd().length);
 }
 
-/** Runs the policy over each `$(…)` / backtick body in `part`, rewriting a translatable search in place. */
+/** Runs the policy over each `$(…)` / backtick / process substitution body in `part`, rewriting a translatable search in place. */
 async function applySubstitutionPolicy(
   part: string,
   substitutions: Substitution[],
@@ -1144,11 +1351,17 @@ export async function applyBashPolicy(
 
   const { parts, separators } = scanned;
   // The index directory belongs to the directory each segment runs in, so `cd` is followed in order.
-  let cwd: Cwd = context?.cwd ?? process.cwd();
+  // cwds[d]: the directory inside the d-th nested ( … ) group; a cd in a group ends with it.
+  const cwds: Cwd[] = [context?.cwd ?? process.cwd()];
   const rendered: string[] = [];
   let changed = false;
   for (let i = 0; i < parts.length; i++) {
     let part = parts[i]!;
+    const startDepth = i > 0 ? scanned.depths[i - 1]! : 0;
+    const depth = startDepth + (/^\s*(\(+)/.exec(part)?.[1]!.length ?? 0);
+    for (let d = startDepth + 1; d <= depth; d++) cwds[d] = cwds[startDepth]!;
+    cwds.length = depth + 1;
+    const cwd: Cwd = cwds[depth]!;
     const substituted = await applySubstitutionPolicy(part, scanned.substitutions[i]!, mode, context, cwd);
     if (substituted.kind === "block") {
       const where = command.includes("\n") ? ` (in: ${part.trim().slice(0, 120)})` : "";
@@ -1160,7 +1373,7 @@ export async function applyBashPolicy(
     const inSubshell = separators[i - 1] === "|" || separators[i] === "|" || separators[i] === "&";
     const afterCd: Cwd | undefined = inSubshell ? undefined : cwdAfterCd(part, cwd);
     if (afterCd !== undefined) {
-      cwd = afterCd;
+      cwds[depth] = afterCd;
       rendered.push(part);
       continue;
     }
@@ -1180,6 +1393,7 @@ export async function applyBashPolicy(
         mode,
         indexPath,
         scanned.stdinFed[i]!,
+        separators[i - 1] === "|",
         segmentCwd !== null && isIgnored ? (operand) => isIgnored(segmentCwd, operand) : undefined,
         cwd ?? undefined,
       );

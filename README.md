@@ -36,7 +36,8 @@ path into the fast one and closes the side doors.
    (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, bare or namespaced like
    `mcp__context-mode__ctx_execute`, extend via `PI_TGREP_WATCH_TOOLS`), pipeline-aware:
    - commands are split on top-level `|`; each segment is judged on its primary binary;
-   - grep/`rg` scan segments (pattern + path present) are transparently translated to
+   - grep/`rg` scan segments (a pattern, plus a path unless `rg` or `grep -r` searches the
+     working directory) are transparently translated to
      `tgrep search` (the CLI's `search` subcommand — it answers from an existing index or
      scans directly, while the bare default query mode can hang when no server is running)
      with quote-preserving re-emission (`'foo|bar'` stays quoted, an empty `""` pattern stays
@@ -50,31 +51,43 @@ path into the fast one and closes the side doors.
      empty result is never mistaken for a block;
    - the index directory is resolved for the directory each grep actually runs in — the
      session cwd, followed through any `cd` in the command or script — so
-     `cd /other/repo && grep …` searches that repo's index, not the session repo's; when a
+     `cd /other/repo && grep …` searches that repo's index, not the session repo's (an unquoted
+     `cd ~` or `cd ~/proj` is followed too, and a `~/` operand is resolved against `$HOME`; the
+     emitted command keeps the `~` so the shell still expands it; a `cd` inside a `( … )` subshell
+     only applies until the group closes); when a
      valid index directory exists, translated commands whose positional paths are all
      relative get `--index-path '<index dir>'` injected (any absolute positional, or an
      explicit `--index-path`, skips the injection); without an index the `search` scans the
      files directly (tgrep prints its own notice) — a bare query-mode `tgrep`, which would
      rebuild an index beside the searched path or hang, is never emitted; `-e`/`--regexp`/
      `-f`/`--file` pattern arguments are tracked so a pattern never masquerades as a path;
+   - without a path, `rg PATTERN` is translated with no path and `grep -r PATTERN` with `.`
+     appended, so the output keeps grep's `./` prefix; a non-recursive grep without a file
+     reads stdin and runs unchanged;
    - the same `--no-ignore-parent` is added when a translated command's path operand exists in
      the repo and `git check-ignore` reports it ignored;
    - `rg --files`, `rg --type-list`, `rg -h/--help/-V/--version` and `grep --help/--version`
      print listings or help rather than search, so they run unchanged (tgrep has no file-listing
      mode);
-   - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim: no tree scan, no block;
+   - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim, even with a flag tgrep
+     can't translate (`git ls-files -z | grep -zv x`): no tree scan, no block;
    - `ctx_execute`/`ctx_execute_file` shell code is scanned exactly like a `bash` command:
      newlines separate commands, `#` comments are ignored, and heredoc bodies are left
      untouched while a grep on another line is still translated; a grep that reads a heredoc
      or here-string (`<<`, `<<<`) runs unchanged since `tgrep search` doesn't read stdin;
    - non-shell `ctx_execute`/`ctx_execute_file` code (e.g. JavaScript) is scanned for
      `child_process` exec/spawn calls (`exec`, `execSync`, `execFile`, `execFileSync`,
-     `spawn`, `spawnSync`): an embedded shell grep inside a backtick template or
-     double-quoted string is translated in place, while single-quoted, escaped, interpolated,
-     or statically unextractable commands are blocked, so `execSync('grep -rn …')` can no
-     longer bypass the index; member calls only count when the receiver is bound to
-     `child_process` (so `regex.exec(line)` is left alone), and an unextractable command only
-     blocks when the code mentions grep;
+     `spawn`, `spawnSync`): the string literal (single-quoted, double-quoted, or a backtick
+     template) is decoded (`\\|`, `\'`, `\n`, `\xHH`, `\uHHHH`, …), translated in place and
+     re-encoded in the same quote style, so `execSync('grep -rn …')` can no longer bypass the
+     index; each `${…}` in a template is an opaque dynamic word (a grep that uses it runs
+     unchanged, other commands in the string are still translated); argv-form calls
+     (`execFileSync('rg', ['--files', …])`) pass only the program name, which runs unchanged;
+     member calls only count when the receiver is bound to `child_process` (so
+     `regex.exec(line)` is left alone); a command that isn't a string literal
+     (`execSync(cmd)`) blocks only when some string literal in the code is a grep that would
+     be translated or blocked, so prose mentions of grep and stdin filters
+     (`ps aux | grep node`) still run;
    - `ctx_batch_execute` entries are checked individually (the entry's label appears in block
      reasons);
    - output-side redirects are preserved with fd numbers still glued to their redirect
@@ -85,15 +98,20 @@ path into the fast one and closes the side doors.
    - grep whose operands contain a shell expansion (`"$f"`, `$FILES`, `$(find …)`, backticks)
      greps a dynamic list the index can't help with, so it runs unchanged, as does a command
      follows a `cd` with a dynamic target (until the next absolute `cd`);
-   - the body of `$(…)` or backticks is judged like any other command, in the directory it runs
-     in: stdin filters (`$(git ls-files | grep -v obj/)`) and other binaries
+   - the body of `$(…)`, backticks or a process substitution `<(…)` / `>(…)` is judged like any
+     other command, in the directory it runs in: stdin filters
+     (`$(git ls-files | grep -v obj/)`) and other binaries
      (`$(which rg)`) run unchanged, a tree scan (`$(grep -rl X src | grep -v obj/)`) is
      translated in place or, when it can't be, left as written; it is blocked only when an
      in-place rewrite is unsafe (a backgrounded grep or an unsupported flag inside it,
-     unparseable quoting, or a backtick body with backslash escapes);
+     unparseable quoting, or a backtick body with backslash escapes); a substitution or `${…}`
+     counts as one word, so `A=$(git grep -l X -- src)` is never mistaken for a `grep` command,
+     and a grep whose operand is a process substitution (`grep -c x <(cmd)`) reads a pipe, so it
+     runs unchanged;
    - a grep that is itself backgrounded with `&` (`grep … &`, `a && grep … &`; one inside a
-     backgrounded loop or group is translated) and a grep with a stdin redirect (`<`) are
-     blocked, while the same constructs on other commands are left alone;
+     backgrounded loop or group is translated, and an `&` inside `( … )` only backgrounds that
+     subshell, so `grep … && (nohup x &)` is translated) and a grep with a stdin redirect (`<`,
+     `< <(…)`) are blocked, while the same constructs on other commands are left alone;
    - every block reason names what triggered it (the construct, or the unsupported flag) and
      keeps the phrase "bypasses the tgrep index" so `npm run analyze` can count blocks;
      BRE patterns the converter can't prove equivalent (back-references such as `\1`, see Safety
@@ -180,9 +198,13 @@ The only additions are metadata: `details.engine: "tgrep" | "rg-fallback"`,
 
 The `grep` tool also recovers from common model mistakes, adding only notices and metadata:
 
-- **Invalid regex.** A pattern tgrep cannot compile (`Generate(`, `Handle(Foo|Bar`) is retried once
-  as a literal (`-F`) before the ripgrep fallback. The result ends with
-  `[pi-tgrep] pattern is not a valid regex; searched literally` and has `details.regexFallback: true`.
+- **Invalid regex.** A pattern tgrep cannot compile (`Generate(`, `new Foo|Foo(`) is first retried
+  once with only the invalid characters escaped (unbalanced parentheses, an unclosed `[`, braces
+  that are not a quantifier); the rest of the regex, such as the alternation, is kept. If that
+  finds matches, the result ends with `[pi-tgrep] pattern is not a valid regex; searched as <repaired>`
+  and has `details.regexFallback: true` and `details.repairedPattern`. Otherwise it is retried as a
+  literal (`-F`) before the ripgrep fallback, ending with
+  `[pi-tgrep] pattern is not a valid regex; searched literally`.
 - **Multiple paths in one string.** If `path` does not exist as written but every
   whitespace-separated token does (`"src tests"`), all of them are searched
   (`details.searchPaths`). Results are shown relative to the working directory.
@@ -196,7 +218,17 @@ The `grep` tool also recovers from common model mistakes, adding only notices an
 - GNU grep's `-r` is **recursive**, but tgrep's `-r` is `--replace`, so the translator drops
   `-r/-R` instead of passing them through (tgrep walks recursively by default). Since `grep -r`
   prints file names even for a single file operand while tgrep doesn't, `-H` is added in that
-  case.
+  case, including an unquoted glob such as `src/*.csproj` that expands to exactly one file.
+- `grep -c` prints `0` for files without a match, but tgrep (like `rg -c`) omits them, so a translated
+  `grep -c`/`--count` adds `--include-zero`; `rg -c` is translated as written.
+- grep searches dotfiles and dot directories (`.github/`, `.mnemonic/`), but tgrep skips hidden paths
+  unless given `--hidden`, so every translated `grep`/`egrep`/`fgrep` adds `--hidden` (it then also
+  searches `.git/`, like grep does); `rg` skips hidden paths itself, so `rg` is translated as written.
+- grep and rg accept a flag given twice (`grep -n pat -n file`, `-i … -i`, `-A 1 -A 2`), but tgrep exits
+  with a usage error, so translated commands collapse repeats, treating `-n`/`--line-number` and
+  the like as one flag: a repeated switch is emitted once, and a repeated flag with a value (`-A`,
+  `-m`, `--color`, …) keeps its last value, as grep does. `-e`, `-f`, `-g`/`--include`, `-t`,
+  `--type-not`, `--iglob` and `--type-add` may repeat and are all kept.
 - grep accepts rg's `--type`/`-t`, `--type-not` and `--type-add`; `rg --include=GLOB` is
   translated to `-g GLOB` as `grep --include` is; `rg -P` maps like `--pcre2`.
 - Plain `grep` (no `-E`/`-P`/`-F`) patterns are POSIX BRE, but tgrep's default engine is a Rust
@@ -207,8 +239,9 @@ The `grep` tool also recovers from common model mistakes, adding only notices an
   Anything the converter can't prove equivalent runs the original command instead: back-references
   (`\1`), `\<`/`\>` that don't sit next to a required word character, stacked quantifiers,
   empty alternatives (`a\|`), brackets containing `\`, unknown escapes such as `\d`.
-  `-E`/`egrep` need no flag; `-F`/`fgrep` maps to `-F`; `-P`/`--perl-regexp` maps to tgrep's
-  `-P` (PCRE2).
+  `-E`/`egrep` need no flag and pass the pattern as written, except that a bracket expression
+  containing `\` (`[a-z\-]`), which POSIX reads literally and tgrep as an escape, runs the original;
+  `-F`/`fgrep` maps to `-F`; `-P`/`--perl-regexp` maps to tgrep's `-P` (PCRE2).
 - During a from-scratch index build the tgrep server answers from an empty index, so searches
   temporarily use ripgrep until `Indexing: complete`, favoring correctness over speed.
 
@@ -232,7 +265,10 @@ for the real numbers: indexed vs fallback vs builtin grep traffic, zero-result r
 p50/p95, search→read conversion, and how often the shell policy translates or blocks.
 Translated shell greps are identified by the `details.engine: "tgrep"` stamp the extension
 adds to the bash tool result; sessions recorded before the stamp existed count translated
-greps as plain grep/rg.
+greps as plain grep/rg. `--replay` also judges every recorded shell call that mentions grep/rg with
+the policy in the current checkout and re-runs the grep tool calls that found nothing or failed,
+so the block rate and the failed-grep → shell fallback count can be compared before and after a
+change over the same sessions.
 
 See `test/e2e.md` for headless `pi -p` scripts and `test/tgrep-cli-notes.md` for the verified
 tgrep CLI ground truth this implementation relies on.

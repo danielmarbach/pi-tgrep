@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { createGrepToolOverride } from "../src/grep-tool.ts";
+import { createGrepToolOverride, repairRegex } from "../src/grep-tool.ts";
 import { resetBinaryCache } from "../src/tgrep-client.ts";
 
 const execFileP = promisify(execFile);
@@ -114,7 +114,7 @@ try {
   assert.equal(regexRetry.details.regexFallback, true);
   assert.equal(regexRetry.details.fallback, undefined);
   assert.match(regexRetry.content[0].text, /tests\/gen\.ts:1: Generate\(x\)/);
-  assert.match(regexRetry.content[0].text, /\[pi-tgrep\] pattern is not a valid regex; searched literally$/);
+  assert.match(regexRetry.content[0].text, /\[pi-tgrep\] pattern is not a valid regex; searched as Generate\\\($/);
   const unbalanced = await literalTool.execute("d7", { pattern: "Handle(Foo|Bar" }, undefined, undefined, ctx);
   assert.equal(unbalanced.details.regexFallback, true);
   assert.match(unbalanced.content[0].text, /tests\/gen\.ts:2: Handle\(Foo\|Bar/);
@@ -124,6 +124,46 @@ try {
   assert.equal(validRegex.details.regexFallback, undefined);
   assert.doesNotMatch(validRegex.content[0].text, /pi-tgrep\]/);
   console.log("invalid regex literal retry ok");
+
+  await writeFile(
+    path.join(repoDir, "tests", "home.cs"),
+    "var r = new HomeRenderer();\npublic HomeRenderer(int x) { }\nunrelated line\ntry { } catch (OperationCanceledException) { }\n",
+  );
+  const repaired = await literalTool.execute("d9a", { pattern: "new HomeRenderer|HomeRenderer(", path: "tests", glob: "*.cs" }, undefined, undefined, ctx);
+  assert.equal(repaired.details.regexFallback, true);
+  assert.equal(repaired.details.repairedPattern, "new HomeRenderer|HomeRenderer\\(");
+  assert.match(repaired.content[0].text, /^home\.cs:1: var r = new HomeRenderer\(\);$/m);
+  assert.match(repaired.content[0].text, /^home\.cs:2: public HomeRenderer\(int x\) \{ \}$/m);
+  assert.match(repaired.content[0].text, /\[pi-tgrep\] pattern is not a valid regex; searched as new HomeRenderer\|HomeRenderer\\\($/);
+  const braces = await literalTool.execute("d9b", { pattern: "try { } catch (OperationCanceledException", path: "tests", glob: "*.cs" }, undefined, undefined, ctx);
+  assert.equal(braces.details.repairedPattern, "try \\{ \\} catch \\(OperationCanceledException");
+  assert.match(braces.content[0].text, /^home\.cs:4: try \{ \} catch \(OperationCanceledException\) \{ \}$/m);
+  await writeFile(path.join(repoDir, "tests", "plus.cs"), "a+(b\n");
+  const stillLiteral = await literalTool.execute("d9c", { pattern: "a+(b", path: "tests", glob: "plus.cs" }, undefined, undefined, ctx);
+  assert.equal(stillLiteral.details.regexFallback, true);
+  assert.equal(stillLiteral.details.repairedPattern, undefined);
+  assert.match(stillLiteral.content[0].text, /^plus\.cs:1: a\+\(b\n\n\[pi-tgrep\] pattern is not a valid regex; searched literally$/);
+  console.log("repaired regex retry ok");
+
+  assert.equal(repairRegex("new HomeRenderer|HomeRenderer("), "new HomeRenderer|HomeRenderer\\(");
+  assert.equal(repairRegex("Build(.*affectedPageUrl|\\.Build\\("), "Build\\(.*affectedPageUrl|\\.Build\\(");
+  assert.equal(repairRegex("(this IMessageSession.*Type|Reply.*"), "\\(this IMessageSession.*Type|Reply.*");
+  assert.equal(repairRegex("TryGetDiagnosticValue|PS0003|IsGenerated(SyntaxTree"), "TryGetDiagnosticValue|PS0003|IsGenerated\\(SyntaxTree");
+  assert.equal(repairRegex("ToAbsoluteUrl|Append(title"), "ToAbsoluteUrl|Append\\(title");
+  assert.equal(repairRegex("Handle)Foo"), "Handle\\)Foo");
+  assert.equal(repairRegex("a(b)c(d"), "a(b)c\\(d");
+  assert.equal(repairRegex("a(b(c)"), "a\\(b(c)");
+  assert.equal(repairRegex("catch (X) { }"), "catch (X) \\{ \\}");
+  assert.equal(repairRegex("foo[bar"), "foo\\[bar");
+  assert.equal(repairRegex("[a-z](x"), "[a-z]\\(x");
+  assert.equal(repairRegex("[(]x("), "[(]x\\(");
+  assert.equal(repairRegex("[]a)]("), "[]a)]\\(");
+  assert.equal(repairRegex("x{2} y{2,} z{2,4} w{,3}"), "x{2} y{2,} z{2,4} w\\{,3\\}");
+  assert.equal(repairRegex("{2}x"), "\\{2\\}x");
+  assert.equal(repairRegex("struct {"), "struct \\{");
+  assert.equal(repairRegex("a\\(b(c"), "a\\(b\\(c");
+  assert.equal(repairRegex("needl[e]|(a|b).*\\d+"), "needl[e]|(a|b).*\\d+");
+  console.log("repairRegex unit ok");
 
   const multi = await literalTool.execute("d10", { pattern: "needle", path: "src tests/gen.ts" }, undefined, undefined, ctx);
   assert.equal(multi.details.engine, "tgrep");

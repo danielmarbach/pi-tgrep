@@ -10,6 +10,57 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-22
+
+### Fixed
+
+- The `grep` tool no longer loses the intended alternation when a pattern like
+  `new HomeRenderer|HomeRenderer(` is not a valid regex: it first escapes only the invalid
+  characters and searches `new HomeRenderer|HomeRenderer\(`, and only then falls back to a fully
+  literal search. The notice now reads `searched as <repaired pattern>` in that case.
+- `cd ~` / `cd ~/proj && grep …` is now translated against the index of that directory instead of
+  running unchanged, and `grep -r pattern ~/file.txt` keeps the `file:` prefix on every match.
+- `rg PATTERN` and `grep -r PATTERN` without a path operand (`rg -l Foo --type cs`,
+  `grep -rn Foo --include="*.cs"`) are now translated to `tgrep search` instead of running a
+  full scan unchanged; `grep -r` keeps its `./` output prefix.
+- A grep that filters a pipe (`git ls-files -z | grep -zv Tests/ | xargs …`) is no longer blocked
+  when it uses a flag tgrep can't translate; it runs unchanged. Greps that scan files still block
+  on such flags.
+- A grep that reads a process substitution (`grep -c x <(cmd)`, `diff <(…) <(…)`) is no longer
+  blocked as a `<` stdin redirect; it runs unchanged, and a tree scan inside `<(…)` / `>(…)` is
+  translated in place.
+- `A=$(git grep -l X -- src)` and other assignments or words that wrap a command substitution,
+  backticks or `${…}` are no longer rewritten into `A=$(git tgrep search …)`, which failed with
+  `git: 'tgrep' is not a git command`. A `$(…)` inside double quotes
+  (`echo "n: $(grep -c x f)"`) is judged like any other substitution instead of having its
+  quotes end the string.
+- `grep`/`rg` commands inside single-quoted or backslash-escaped JavaScript strings passed to
+  `exec`/`execSync` in `ctx_execute` are now translated to `tgrep search` instead of being
+  blocked, and argv-style calls such as `execFileSync('rg', ['--files', …])` run unchanged.
+- `ctx_execute` scripts that build a command with a template interpolation (`${…}`) or pass it
+  through a helper (`run(cmd)`) are no longer blocked wholesale: only a script containing a grep
+  that would bypass the index is blocked, so harmless uses such as `… | grep -v x` or "grep" in a
+  prompt run as written.
+- `grep -E`/`egrep` patterns with a backslash inside a bracket expression (`[A-Za-z0-9_.\-]`,
+  `[<>\[\]]`) now run unchanged instead of being translated: real grep reads that backslash
+  literally while tgrep read it as an escape, so the translation matched different lines.
+- `grep -r pattern dir/*.csproj` keeps the `file:` prefix on every match when the glob expands to
+  a single file, as real `grep -r` prints it.
+- A translated `grep -c` now prints a `0` count for files without a match, as grep does, instead
+  of omitting them (`grep -c foo file.ts` printed nothing when `foo` was absent).
+- A translated `grep` now searches hidden files and directories such as `.github/` and
+  `.mnemonic/`, as grep does, instead of silently skipping them
+  (`grep -rn --include='*.yml' needle .` found nothing in `.github/workflows/`).
+- A translated `grep` or `rg` command that repeats a flag (`grep -n 'export MODEL=' -n SKILL.md`,
+  `-i … -i`, `-A 1 -A 2`) no longer fails with tgrep's `cannot be used multiple times` error; a
+  repeated flag with a value keeps its last value, as grep does.
+- A grep or rg that ends its options with `--` (`grep -nF -- "--allow-tool shell" file`) keeps the
+  `--` in its translation, so a pattern starting with a dash is searched for instead of failing as
+  an unknown tgrep flag.
+- `( … )` subshell groups are understood: `grep -n x f && (nohup cmd &)` is no longer blocked as a
+  backgrounded grep, a grep that opens a group (`(grep -rn x src)`) is translated, and a `cd` inside a
+  group (`(cd /other && grep -rn x .)`) searches that directory's index instead of the session's.
+
 ## [0.5.0] - 2026-10-16
 
 ### Added
