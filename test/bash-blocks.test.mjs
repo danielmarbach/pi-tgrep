@@ -553,6 +553,40 @@ async function runEndOfOptionsTests() {
   console.log("end of options tests ok");
 }
 
+async function runSubshellGroupTests() {
+  // An & inside ( … ) backgrounds only that subshell's commands, not the list before the group.
+  await policyCase("grep -n foo src/a.ts && (nohup node x.mjs > /dev/null 2>&1 &)", "translate", {
+    action: "rewrite",
+    command: "tgrep search --hidden -n foo src/a.ts && (nohup node x.mjs > /dev/null 2>&1 &)",
+  });
+  await policyCase("grep -rn foo src; (cd /tmp && sleep 1 &); echo done", "translate", {
+    action: "rewrite",
+    command: "tgrep search --hidden -n foo src; (cd /tmp && sleep 1 &); echo done",
+  });
+  // A grep that opens a subshell group is still recognized.
+  await policyCase("(grep -rn foo src) | head", "translate", {
+    action: "rewrite",
+    command: "( tgrep search --hidden -n foo src) | head",
+  });
+  // A grep inside the backgrounded group, or a group that is itself backgrounded, still blocks.
+  for (const command of ["(grep -rn foo src &)", "(grep -rn foo src && sleep 1 &)", "(cd x && grep -rn foo src) &"]) {
+    const result = await policyCase(command, "translate", { action: "block" });
+    assert.match(result.reason, /[Bb]ackground/);
+  }
+  // A cd inside ( … ) moves only that group.
+  const perDir = { cwd: "/repo", resolveIndex: async (cwd) => `${cwd}/.tgrep` };
+  await policyCase("(cd /x && grep -rn foo src); grep -rn bar src", "translate", {
+    action: "rewrite",
+    command:
+      "(cd /x && tgrep search --index-path '/x/.tgrep' --hidden -n foo src); tgrep search --index-path '/repo/.tgrep' --hidden -n bar src",
+  }, perDir);
+  await policyCase('(cd "$d" && grep -rln foo . --include=*.cs); grep -rn bar src', "translate", {
+    action: "rewrite",
+    command: "(cd \"$d\" && grep -rln foo . --include=*.cs); tgrep search --index-path '/repo/.tgrep' --hidden -n bar src",
+  }, perDir);
+  console.log("subshell group tests ok");
+}
+
 async function runEreBracketTests() {
   // A backslash inside an ERE bracket is literal in POSIX grep but an escape in tgrep, so these run as written.
   for (const command of [
@@ -730,4 +764,5 @@ await runKeywordPrefixTests();
 await runEreBracketTests();
 await runGlobOperandTests();
 await runEndOfOptionsTests();
+await runSubshellGroupTests();
 console.log("ALL BLOCK TESTS PASSED");

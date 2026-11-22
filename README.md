@@ -53,7 +53,8 @@ path into the fast one and closes the side doors.
      session cwd, followed through any `cd` in the command or script — so
      `cd /other/repo && grep …` searches that repo's index, not the session repo's (an unquoted
      `cd ~` or `cd ~/proj` is followed too, and a `~/` operand is resolved against `$HOME`; the
-     emitted command keeps the `~` so the shell still expands it); when a
+     emitted command keeps the `~` so the shell still expands it; a `cd` inside a `( … )` subshell
+     only applies until the group closes); when a
      valid index directory exists, translated commands whose positional paths are all
      relative get `--index-path '<index dir>'` injected (any absolute positional, or an
      explicit `--index-path`, skips the injection); without an index the `search` scans the
@@ -108,8 +109,9 @@ path into the fast one and closes the side doors.
      and a grep whose operand is a process substitution (`grep -c x <(cmd)`) reads a pipe, so it
      runs unchanged;
    - a grep that is itself backgrounded with `&` (`grep … &`, `a && grep … &`; one inside a
-     backgrounded loop or group is translated) and a grep with a stdin redirect (`<`, `< <(…)`) are
-     blocked, while the same constructs on other commands are left alone;
+     backgrounded loop or group is translated, and an `&` inside `( … )` only backgrounds that
+     subshell, so `grep … && (nohup x &)` is translated) and a grep with a stdin redirect (`<`,
+     `< <(…)`) are blocked, while the same constructs on other commands are left alone;
    - every block reason names what triggered it (the construct, or the unsupported flag) and
      keeps the phrase "bypasses the tgrep index" so `npm run analyze` can count blocks;
      BRE patterns the converter can't prove equivalent (back-references such as `\1`, see Safety

@@ -453,6 +453,8 @@ interface ScannedCommand {
   heredocs: string[];
   /** substitutions[i]: the `$(…)` / backtick / `<(…)` / `>(…)` bodies inside parts[i], in source order. */
   substitutions: Substitution[][];
+  /** depths[i]: how many ( … ) subshell groups are open where parts[i] ends. */
+  depths: number[];
 }
 
 interface Substitution {
@@ -637,6 +639,8 @@ function scanPipeline(command: string): ScanResult {
   const heredocs: string[] = [];
   const substitutions: Substitution[][] = [];
   const pending: PendingHeredoc[] = [];
+  const depths: number[] = [];
+  let depth = 0;
   let current = "";
   let currentSubstitutions: Substitution[] = [];
   let currentStdinFed = false;
@@ -650,6 +654,7 @@ function scanPipeline(command: string): ScanResult {
     blocks.push(currentBlock);
     substitutions.push(currentSubstitutions);
     separators.push(separator);
+    depths.push(depth);
     current = "";
     currentSubstitutions = [];
     currentStdinFed = false;
@@ -751,9 +756,10 @@ function scanPipeline(command: string): ScanResult {
         i += 2;
         continue;
       }
-      // A single & backgrounds the whole && / || / | list before it, none of which can be translated.
+      // A single & backgrounds the whole && / || / | list before it, none of which can be translated;
+      // inside ( … ) that list starts at the group.
       currentBlock ??= BACKGROUND_BLOCK_REASON;
-      for (let k = parts.length - 1; k >= 0 && !/^(;;?|\n)/.test(separators[k]!); k--) {
+      for (let k = parts.length - 1; k >= 0 && !/^(;;?|\n)/.test(separators[k]!) && depths[k]! >= depth; k--) {
         blocks[k] ??= BACKGROUND_BLOCK_REASON;
       }
       endPart("&");
@@ -821,6 +827,8 @@ function scanPipeline(command: string): ScanResult {
       i += separator.length;
       continue;
     }
+    if (c === "(" && current.trim() === "") depth++;
+    else if (c === ")" && depth > 0) depth--;
     current += c;
     i++;
   }
@@ -828,7 +836,8 @@ function scanPipeline(command: string): ScanResult {
   stdinFed.push(currentStdinFed);
   blocks.push(currentBlock);
   substitutions.push(currentSubstitutions);
-  return { kind: "parts", parts, separators, stdinFed, blocks, heredocs, substitutions };
+  depths.push(depth);
+  return { kind: "parts", parts, separators, stdinFed, blocks, heredocs, substitutions, depths };
 }
 
 function splitRedirect(segment: string): { cmd: string; suffix: string } {
@@ -892,6 +901,14 @@ function stripPrefixes(tokens: Token[]): { prefixes: string[]; rest: Token[]; ok
     ) {
       prefixes.push(renderPrefix(head));
       rest.shift();
+      continue;
+    }
+    // A subshell group opens with ( glued to its first command, as in `(grep -rn x src)`.
+    const opens = !head.quoted && !head.expansion ? /^\(+/.exec(head.text)?.[0] : undefined;
+    if (opens) {
+      prefixes.push(opens);
+      if (head.text.length > opens.length) rest[0] = { ...head, text: head.text.slice(opens.length) };
+      else rest.shift();
       continue;
     }
     if (head.text.startsWith("-")) return { prefixes, rest, ok: false };
@@ -1248,6 +1265,11 @@ type Cwd = string | null;
 function cwdAfterCd(part: string, cwd: Cwd): Cwd | undefined {
   const tokens = tokenizeDetailed(splitRedirect(part).cmd);
   if (!tokens) return undefined;
+  const opens = tokens[0] && !tokens[0].quoted && !tokens[0].expansion ? /^\(+/.exec(tokens[0].text)?.[0] : undefined;
+  if (opens) {
+    if (tokens[0]!.text.length > opens.length) tokens[0] = { ...tokens[0]!, text: tokens[0]!.text.slice(opens.length) };
+    else tokens.shift();
+  }
   let cd = 0;
   while (tokens[cd] && !tokens[cd]!.quoted && KEYWORD_PREFIXES.has(tokens[cd]!.text)) cd++;
   if (tokens[cd]?.text !== "cd") return undefined;
@@ -1329,11 +1351,17 @@ export async function applyBashPolicy(
 
   const { parts, separators } = scanned;
   // The index directory belongs to the directory each segment runs in, so `cd` is followed in order.
-  let cwd: Cwd = context?.cwd ?? process.cwd();
+  // cwds[d]: the directory inside the d-th nested ( … ) group; a cd in a group ends with it.
+  const cwds: Cwd[] = [context?.cwd ?? process.cwd()];
   const rendered: string[] = [];
   let changed = false;
   for (let i = 0; i < parts.length; i++) {
     let part = parts[i]!;
+    const startDepth = i > 0 ? scanned.depths[i - 1]! : 0;
+    const depth = startDepth + (/^\s*(\(+)/.exec(part)?.[1]!.length ?? 0);
+    for (let d = startDepth + 1; d <= depth; d++) cwds[d] = cwds[startDepth]!;
+    cwds.length = depth + 1;
+    const cwd: Cwd = cwds[depth]!;
     const substituted = await applySubstitutionPolicy(part, scanned.substitutions[i]!, mode, context, cwd);
     if (substituted.kind === "block") {
       const where = command.includes("\n") ? ` (in: ${part.trim().slice(0, 120)})` : "";
@@ -1345,7 +1373,7 @@ export async function applyBashPolicy(
     const inSubshell = separators[i - 1] === "|" || separators[i] === "|" || separators[i] === "&";
     const afterCd: Cwd | undefined = inSubshell ? undefined : cwdAfterCd(part, cwd);
     if (afterCd !== undefined) {
-      cwd = afterCd;
+      cwds[depth] = afterCd;
       rendered.push(part);
       continue;
     }

@@ -55,6 +55,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - A grep or rg that ends its options with `--` (`grep -nF -- "--allow-tool shell" file`) keeps the
   `--` in its translation, so a pattern starting with a dash is searched for instead of failing as
   an unknown tgrep flag.
+- `( … )` subshell groups are understood: `grep -n x f && (nohup cmd &)` is no longer blocked as a
+  backgrounded grep, a grep that opens a group (`(grep -rn x src)`) is translated, and a `cd` inside a
+  group (`(cd /other && grep -rn x .)`) searches that directory's index instead of the session's.
 
 ## [0.5.0] - 2026-10-16
 
