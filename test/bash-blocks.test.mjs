@@ -511,6 +511,31 @@ async function runReviewRegressionTests() {
   console.log("review regression tests ok");
 }
 
+async function runGlobOperandTests() {
+  const dir = await mkdtemp(path.join(tmpdir(), "pi-tgrep-glob-"));
+  try {
+    await writeFile(path.join(dir, "App.csproj"), "<Project />\n");
+    await writeFile(path.join(dir, "a.ts"), "foo\n");
+    await writeFile(path.join(dir, "b.ts"), "foo\n");
+    // grep -r names the file even when the glob expands to a single one, so -H keeps that prefix.
+    await policyCase('grep -n "InternalsVisibleTo" -r *.csproj', "translate", {
+      action: "rewrite",
+      command: "tgrep search -H -n InternalsVisibleTo *.csproj",
+    }, { cwd: dir });
+    await policyCase("grep -rn foo *.ts", "translate", {
+      action: "rewrite",
+      command: "tgrep search -n foo *.ts",
+    }, { cwd: dir });
+    await policyCase("grep -rn foo '*.csproj'", "translate", {
+      action: "rewrite",
+      command: "tgrep search -n foo '*.csproj'",
+    }, { cwd: dir });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  console.log("glob operand tests ok");
+}
+
 async function runEreBracketTests() {
   // A backslash inside an ERE bracket is literal in POSIX grep but an escape in tgrep, so these run as written.
   for (const command of [
@@ -686,4 +711,5 @@ await runTildeTests();
 await runReviewRegressionTests();
 await runKeywordPrefixTests();
 await runEreBracketTests();
+await runGlobOperandTests();
 console.log("ALL BLOCK TESTS PASSED");

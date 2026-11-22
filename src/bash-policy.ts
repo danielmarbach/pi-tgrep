@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { globSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { breToEre, ereBracketsPortable } from "./bre.ts";
@@ -1085,8 +1085,12 @@ function expandLeadingTilde(operand: Operand): string {
   return homedir() + operand.text.slice(1);
 }
 
-function isExistingNonDirectory(operand: string, cwd: string): boolean {
-  const stats = statSync(path.resolve(cwd, operand), { throwIfNoEntry: false });
+/** Whether the operand names exactly one existing file once the shell expands `~` and glob characters. */
+function namesSingleFile(operand: Operand, cwd: string): boolean {
+  const resolved = expandLeadingTilde(operand);
+  const matches = !operand.quoted && /[*?[]/.test(resolved) ? globSync(resolved, { cwd }) : [resolved];
+  if (matches.length !== 1) return false;
+  const stats = statSync(path.resolve(cwd, matches[0]!), { throwIfNoEntry: false });
   return stats !== undefined && !stats.isDirectory();
 }
 
@@ -1147,7 +1151,7 @@ async function policySegment(
     cwd !== undefined &&
     paths.length === 1 &&
     !translation.tokens.some((t) => t.text === "-H" || t.text === "-I") &&
-    isExistingNonDirectory(resolvedPaths[0]!, cwd)
+    namesSingleFile(operands[0]!, cwd)
   ) {
     translation.tokens.unshift({ text: "-H" });
   }

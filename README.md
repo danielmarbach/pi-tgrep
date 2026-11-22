@@ -216,7 +216,7 @@ The `grep` tool also recovers from common model mistakes, adding only notices an
 - GNU grep's `-r` is **recursive**, but tgrep's `-r` is `--replace`, so the translator drops
   `-r/-R` instead of passing them through (tgrep walks recursively by default). Since `grep -r`
   prints file names even for a single file operand while tgrep doesn't, `-H` is added in that
-  case.
+  case, including an unquoted glob such as `src/*.csproj` that expands to exactly one file.
 - grep accepts rg's `--type`/`-t`, `--type-not` and `--type-add`; `rg --include=GLOB` is
   translated to `-g GLOB` as `grep --include` is; `rg -P` maps like `--pcre2`.
 - Plain `grep` (no `-E`/`-P`/`-F`) patterns are POSIX BRE, but tgrep's default engine is a Rust

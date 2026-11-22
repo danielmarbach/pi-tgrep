@@ -42,6 +42,8 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - `grep -E`/`egrep` patterns with a backslash inside a bracket expression (`[A-Za-z0-9_.\-]`,
   `[<>\[\]]`) now run unchanged instead of being translated: real grep reads that backslash
   literally while tgrep read it as an escape, so the translation matched different lines.
+- `grep -r pattern dir/*.csproj` keeps the `file:` prefix on every match when the glob expands to
+  a single file, as real `grep -r` prints it.
 
 ## [0.5.0] - 2026-10-16
 

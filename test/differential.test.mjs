@@ -136,6 +136,8 @@ const BATTERY = [
 
   { cmd: "grep -rn needle src/app.ts" },
   { cmd: "grep -rc needle src/app.ts" },
+  { cmd: "grep -rn needle src/nested/*.ts" },
+  { cmd: "grep -rn foo src/*.cs" },
   { cmd: "grep -rn needle build.log" },
   { cmd: "grep -rn needle .", known: "grep does not read .gitignore; tgrep skips ignored files (by design)" },
   { cmd: "grep -rc needle src", known: "grep -c lists files with a zero count; tgrep omits them" },
