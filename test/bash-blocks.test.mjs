@@ -211,6 +211,31 @@ async function runHeredocTests() {
   console.log("heredoc tests ok");
 }
 
+async function runPipeFedGrepTests() {
+  const IDX = { indexPath: "/repo/.tgrep" };
+  // A grep reading a pipe runs unchanged even with a flag tgrep can't translate.
+  await policyCase(
+    "cd /repo/src; git ls-files -z '*.cs' | grep -zv \"Tests/\" | xargs -0 sed -i -E 's/foo/bar/'; git status",
+    "translate",
+    { action: "allow" },
+    IDX,
+  );
+  await policyCase("git ls-files -z | grep -zv Tests/", "translate", { action: "allow" }, IDX);
+  await policyCase("git ls-files | grep -U foo", "translate", { action: "allow" }, IDX);
+  await policyCase("git ls-files | rg --some-flag x", "translate", { action: "allow" }, IDX);
+  // Another segment of the same command is still translated.
+  await policyCase("git ls-files -z | grep -zv Tests/; grep -rn foo src", "translate", {
+    action: "rewrite",
+    command: "git ls-files -z | grep -zv Tests/; tgrep search --index-path '/repo/.tgrep' -n foo src",
+  }, IDX);
+  // Not pipe-fed: the unsupported flag still blocks.
+  const notPiped = await policyCase("grep -z foo src/a.ts", "translate", { action: "block" }, IDX);
+  assert.match(notPiped.reason, /-z is not recognized/);
+  await policyCase("echo hi && grep -z foo src/a.ts", "translate", { action: "block" }, IDX);
+  await policyCase("grep -z foo src/a.ts | head -3", "translate", { action: "block" }, IDX);
+  console.log("pipe-fed grep tests ok");
+}
+
 async function runMultiLineTests() {
   const IDX = { indexPath: "/repo/.tgrep" };
   // A newline separates commands like ; does, so a grep on its own line is translated.
@@ -465,6 +490,7 @@ await runSubstitutionBlockTests();
 await runSpecificReasonTests();
 await runOrSeparatorTests();
 await runHeredocTests();
+await runPipeFedGrepTests();
 await runMultiLineTests();
 await runCdTrackingTests();
 await runTildeTests();

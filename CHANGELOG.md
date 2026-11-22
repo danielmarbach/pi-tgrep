@@ -18,6 +18,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
   literal search. The notice now reads `searched as <repaired pattern>` in that case.
 - `cd ~` / `cd ~/proj && grep …` is now translated against the index of that directory instead of
   running unchanged, and `grep -r pattern ~/file.txt` keeps the `file:` prefix on every match.
+- A grep that filters a pipe (`git ls-files -z | grep -zv Tests/ | xargs …`) is no longer blocked
+  when it uses a flag tgrep can't translate; it runs unchanged. Greps that scan files still block
+  on such flags.
 
 ## [0.5.0] - 2026-10-16
 

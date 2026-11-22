@@ -1011,6 +1011,7 @@ async function policySegment(
   mode: BashPolicyMode,
   indexPath: string | undefined,
   stdinFed: boolean,
+  pipeFed: boolean,
   isIgnored: ((operand: string) => Promise<boolean>) | undefined,
   cwd: string | undefined,
 ): Promise<SegmentResult> {
@@ -1031,6 +1032,8 @@ async function policySegment(
   if (isNonSearchInvocation(bin, rest.slice(1))) return { kind: "verbatim" };
   const translation = bin === "rg" ? translateRg(rest.slice(1)) : translateGrep(bin, rest.slice(1));
   if ("error" in translation) {
+    // A grep reading a pipe runs as written, so an untranslatable flag costs nothing.
+    if (pipeFed) return { kind: "verbatim" };
     return {
       kind: "block",
       reason: blockReason(`${translation.error}: this flag has no tgrep translation; use the grep tool instead.`),
@@ -1197,6 +1200,7 @@ export async function applyBashPolicy(
         mode,
         indexPath,
         scanned.stdinFed[i]!,
+        separators[i - 1] === "|",
         segmentCwd !== null && isIgnored ? (operand) => isIgnored(segmentCwd, operand) : undefined,
         cwd ?? undefined,
       );

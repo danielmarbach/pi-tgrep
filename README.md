@@ -64,7 +64,8 @@ path into the fast one and closes the side doors.
    - `rg --files`, `rg --type-list`, `rg -h/--help/-V/--version` and `grep --help/--version`
      print listings or help rather than search, so they run unchanged (tgrep has no file-listing
      mode);
-   - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim: no tree scan, no block;
+   - grep/`rg` stdin post-filters (`… | grep -v x`) are left verbatim, even with a flag tgrep
+     can't translate (`git ls-files -z | grep -zv x`): no tree scan, no block;
    - `ctx_execute`/`ctx_execute_file` shell code is scanned exactly like a `bash` command:
      newlines separate commands, `#` comments are ignored, and heredoc bodies are left
      untouched while a grep on another line is still translated; a grep that reads a heredoc
