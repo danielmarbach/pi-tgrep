@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { execFile } from "node:child_process";
 
 const DEFAULT_SESSIONS_DIR = "~/.pi/agent/sessions";
 const GREP_FAMILY = /^(grep|egrep|fgrep|rg|ag|ack|pt)$/;
@@ -11,6 +12,7 @@ const BLOCK_MARKER = "bypasses the tgrep index";
 const NO_RESULT = /^No matches found\.?\s*$/;
 const SHELL_TOOLS = new Set(["bash", "ctx_execute", "ctx_execute_file", "ctx_batch_execute"]);
 const DURATION = /^(\d+)([dhmsw])$/;
+const FAMILY_WORD = /\b(grep|egrep|fgrep|rg|ag|ack|pt)\b/;
 
 function expandHome(value) {
 	if (!value) return value;
@@ -20,7 +22,7 @@ function expandHome(value) {
 }
 
 function parseArgs(argv) {
-	const args = { sessionsDir: DEFAULT_SESSIONS_DIR, cwd: undefined, since: undefined, top: 8, followWindow: 3, json: false, help: false };
+	const args = { sessionsDir: DEFAULT_SESSIONS_DIR, cwd: undefined, since: undefined, top: 8, followWindow: 3, json: false, help: false, replay: false, replayTimeout: 20 };
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		const next = argv[i + 1];
@@ -30,6 +32,8 @@ function parseArgs(argv) {
 		else if (arg === "--top") { args.top = Number(next); i += 1; }
 		else if (arg === "--follow-window") { args.followWindow = Number(next); i += 1; }
 		else if (arg === "--json") { args.json = true; }
+		else if (arg === "--replay") { args.replay = true; }
+		else if (arg === "--replay-timeout") { args.replayTimeout = Number(next); i += 1; }
 		else if (arg === "--help" || arg === "-h") { args.help = true; }
 		else throw new Error(`Unknown argument: ${arg}`);
 	}
@@ -56,12 +60,18 @@ Options:
   --top <n>              Examples per top-list. Default: 8
   --follow-window <n>    Later tool calls scanned for follow-up behaviour. Default: 3
   --json                 Machine-readable JSON output
+  --replay               Also replay the recorded calls against this checkout: every shell call
+                         mentioning grep/rg goes through the current tool_call policy, and every
+                         grep tool call that found nothing or failed is re-run with the current
+                         grep tool in its session cwd (when that still exists)
+  --replay-timeout <s>   Per grep tool re-run timeout in seconds. Default: 20
   --help, -h             Show this help
 
 Examples:
   node scripts/analyze-pi-sessions.mjs
   node scripts/analyze-pi-sessions.mjs --cwd Projects/NServiceBus --since 30d
   node scripts/analyze-pi-sessions.mjs --json | jq '.grep.indexedShare'
+  node scripts/analyze-pi-sessions.mjs --replay --since 30d
 `);
 }
 
@@ -178,7 +188,74 @@ function createTotals() {
 		shellCalls: 0, shellSearchCalls: 0, shellTgrepCalls: 0, shellSearchExecuted: 0,
 		shellBlocked: 0, blockedLeadingToGrepTool: 0,
 		shellSearchCommands: new Map(), blockedCommands: new Map(), tgrepShellCommands: new Map(),
+		replay: {
+			shellCalls: 0, blocked: 0, rewritten: 0, unchanged: 0, blockedCommands: new Map(),
+			failedGrepRerun: 0, failedGrepSkipped: 0, failedGrepStillFailing: 0, failedGrepNowMatching: 0,
+			failedGrepCount: 0, failedGrepLeadingToShell: 0,
+		},
 	};
+}
+
+const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
+let replayModules;
+
+async function loadReplayModules() {
+	replayModules ??= Promise.all([
+		import(path.join(SCRIPT_DIR, "../src/watched-tools.ts")),
+		import(path.join(SCRIPT_DIR, "../src/grep-tool.ts")),
+	]).then(([watched, grepTool]) => {
+		const pi = {
+			exec: (command, execArgs, opts = {}) => new Promise((resolve) => {
+				execFile(command, execArgs, { timeout: opts.timeout ?? 30_000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+					resolve({ code: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout: String(stdout), stderr: String(stderr), killed: Boolean(error?.killed) });
+				});
+			}),
+		};
+		return { watched, grep: grepTool.createGrepToolOverride(pi) };
+	});
+	return replayModules;
+}
+
+/** Replays one shell call through the current tool_call policy; the index is left out so nothing is resolved on disk. */
+async function replayShellCall(call, cwd, totals) {
+	const { watched } = await loadReplayModules();
+	const input = structuredClone(call.args && typeof call.args === "object" ? call.args : {});
+	const context = { cwd, resolveIndex: async () => undefined, isIgnored: async () => false };
+	let result;
+	try {
+		result = await watched.applyToolCallPolicy(call.name, input, "translate", watched.DEFAULT_WATCHED_TOOLS, context);
+	} catch {
+		return;
+	}
+	totals.replay.shellCalls += 1;
+	if (result.action === "block") {
+		totals.replay.blocked += 1;
+		bump(totals.replay.blockedCommands, snippet(commandText(call.args)));
+	} else if (result.action === "rewrite") totals.replay.rewritten += 1;
+	else totals.replay.unchanged += 1;
+}
+
+/** Re-runs a grep tool call that found nothing or failed; returns whether it still does. */
+async function replayFailedGrep(call, cwd, timeoutSeconds, totals) {
+	if (!cwd || !fs.existsSync(cwd) || typeof call.args?.pattern !== "string") {
+		totals.replay.failedGrepSkipped += 1;
+		return true;
+	}
+	const { grep } = await loadReplayModules();
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+	totals.replay.failedGrepRerun += 1;
+	try {
+		const result = await grep.execute("replay", call.args, controller.signal, undefined, { cwd });
+		const text = result.content.map((block) => block.text ?? "").join("\n");
+		if (NO_RESULT.test(text.split("\n\n")[0].trim())) return true;
+		totals.replay.failedGrepNowMatching += 1;
+		return false;
+	} catch {
+		return true;
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 async function analyzeFile(filePath, totals, filters, options) {
@@ -284,12 +361,20 @@ async function analyzeFile(filePath, totals, filters, options) {
 				totals.failedGrepLeadingToShell += 1;
 			}
 			if (noResult || isError) totals.failedGrepCount += 1;
+			if (options.replay && (noResult || isError) && await replayFailedGrep(call, sessionCwd, options.replayTimeout, totals)) {
+				totals.replay.failedGrepStillFailing += 1;
+				totals.replay.failedGrepCount += 1;
+				if (follow.some((next) => SHELL_TOOLS.has(next.name) && classifyCommandText(commandText(next.args)).shellSearch)) {
+					totals.replay.failedGrepLeadingToShell += 1;
+				}
+			}
 			continue;
 		}
 
 		if (SHELL_TOOLS.has(call.name)) {
 			totals.shellCalls += 1;
 			const text = commandText(call.args);
+			if (options.replay && FAMILY_WORD.test(text)) await replayShellCall(call, sessionCwd ?? os.homedir(), totals);
 			const classified = classifyCommandText(text);
 			const details = result?.details;
 			// the extension stamps translated commands onto the toolResult details;
@@ -368,12 +453,30 @@ function buildOutput(totals, args, options) {
 			topBlockedCommands: topEntries(totals.blockedCommands, args.top),
 			topTgrepCommands: topEntries(totals.tgrepShellCommands, args.top),
 		},
+		replay: args.replay ? {
+			shellCalls: totals.replay.shellCalls,
+			blocked: totals.replay.blocked,
+			blockRate: pct(totals.replay.blocked, totals.replay.shellCalls),
+			rewritten: totals.replay.rewritten,
+			unchanged: totals.replay.unchanged,
+			failedGrepRerun: totals.replay.failedGrepRerun,
+			failedGrepSkipped: totals.replay.failedGrepSkipped,
+			failedGrepNowMatching: totals.replay.failedGrepNowMatching,
+			failedGrepCount: totals.replay.failedGrepCount,
+			failedGrepFollowedByShellSearch: totals.replay.failedGrepLeadingToShell,
+			shellFallbackAfterFailedGrep: pct(totals.replay.failedGrepLeadingToShell, totals.replay.failedGrepCount),
+			topBlockedCommands: topEntries(totals.replay.blockedCommands, args.top),
+		} : null,
 		caveats: [
 			"details.engine is only persisted for some grep results; 'indexed' attribution is a lower bound and most calls land in 'unknown'.",
 			"Policy-translated shell greps are identified by the toolResult details stamp (engine: tgrep) and counted under tgrepCommands with the rewritten command.",
 			"Sessions recorded before the stamp existed keep the old behavior: translated greps count as plain grep/rg and tgrep-in-shell stays a lower bound.",
 			"Shell classification splits commands naively and reads each segment's primary binary, mirroring the extension's approximation.",
 			"Latency uses session event timestamps (call event -> toolResult event) and includes model-side queueing, not just search time.",
+			...(args.replay ? [
+				"Replay judges every shell call mentioning grep/rg (any tool input, including JavaScript ctx_execute code) with the current policy, in the session cwd, without an index.",
+				"Replayed grep tool calls run against today's files, so a repo that changed or disappeared since the session can turn a hit into a miss or a skip.",
+			] : []),
 		],
 	};
 	return output;
@@ -394,8 +497,21 @@ function renderTop(title, items) {
 	return lines.join("\n");
 }
 
+function renderReplay(replay) {
+	if (!replay) return [];
+	return [
+		"Replay against this checkout",
+		`  Shell calls mentioning grep/rg: ${replay.shellCalls}  rewritten: ${replay.rewritten}  unchanged: ${replay.unchanged}  blocked: ${replay.blocked} (block rate ${fmtPct(replay.blockRate)})`,
+		`  Failed grep calls re-run: ${replay.failedGrepRerun}  now matching: ${replay.failedGrepNowMatching}  skipped (cwd gone): ${replay.failedGrepSkipped}`,
+		`  Still-failing grep -> shell search fallback: ${replay.failedGrepFollowedByShellSearch}/${replay.failedGrepCount} (${fmtPct(replay.shellFallbackAfterFailedGrep)})`,
+		"",
+		renderTop("Top replayed blocked shell commands", replay.topBlockedCommands),
+		"",
+	];
+}
+
 function renderText(output) {
-	const { selection, grep, shell, caveats } = output;
+	const { selection, grep, shell, replay, caveats } = output;
 	return [
 		"=".repeat(88),
 		"pi sessions x pi-tgrep analysis",
@@ -425,6 +541,7 @@ function renderText(output) {
 		"",
 		renderTop("Top tgrep shell commands", shell.topTgrepCommands),
 		"",
+		...renderReplay(replay),
 		"Caveats",
 		...caveats.map((line) => `  - ${line}`),
 	].join("\n");
@@ -436,7 +553,11 @@ async function main() {
 		printHelp();
 		return;
 	}
-	const options = { followWindow: Number.isFinite(args.followWindow) && args.followWindow > 0 ? args.followWindow : 3 };
+	const options = {
+		followWindow: Number.isFinite(args.followWindow) && args.followWindow > 0 ? args.followWindow : 3,
+		replay: args.replay,
+		replayTimeout: Number.isFinite(args.replayTimeout) && args.replayTimeout > 0 ? args.replayTimeout : 20,
+	};
 	const sinceMs = args.since ? Date.now() - Number(args.since.slice(0, -1)) * { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000, w: 604_800_000 }[args.since.slice(-1)] : undefined;
 	const filters = { cwd: args.cwd, sinceMs };
 	const totals = createTotals();

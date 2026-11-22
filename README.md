@@ -232,7 +232,10 @@ for the real numbers: indexed vs fallback vs builtin grep traffic, zero-result r
 p50/p95, search→read conversion, and how often the shell policy translates or blocks.
 Translated shell greps are identified by the `details.engine: "tgrep"` stamp the extension
 adds to the bash tool result; sessions recorded before the stamp existed count translated
-greps as plain grep/rg.
+greps as plain grep/rg. `--replay` also judges every recorded shell call that mentions grep/rg with
+the policy in the current checkout and re-runs the grep tool calls that found nothing or failed,
+so the block rate and the failed-grep → shell fallback count can be compared before and after a
+change over the same sessions.
 
 See `test/e2e.md` for headless `pi -p` scripts and `test/tgrep-cli-notes.md` for the verified
 tgrep CLI ground truth this implementation relies on.
