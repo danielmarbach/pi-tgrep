@@ -63,6 +63,7 @@ const EXTRA_FILES = {
   ].join("\n"),
   "src/nested/deep.ts": "export const needle = 1;\nexport const NEEDLE = 2;\n",
   "docs/notes.txt": "plain notes\nneedle in notes\n",
+  "docs/flags.md": "run it with --agent-cmd shell\nor -n alone\n",
   "App.sln": 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App.csproj", "{GUID}"\nEndProject\n',
   "build.log": "needle in an ignored log\n",
   "secrets/key.txt": "needle in an ignored dir\n",
@@ -159,6 +160,11 @@ const BATTERY = [
   { cmd: "grep -rl --include='*.md' needle ." },
   { cmd: "grep -n needle .hidden-notes.md" },
   { cmd: "rg -n needle secrets" },
+  // `--` ends the options, so a pattern that starts with a dash stays a pattern.
+  { cmd: "grep -rn -- '--agent-cmd' docs" },
+  { cmd: "grep -nF -- '--agent-cmd shell' docs/flags.md" },
+  { cmd: "grep -n -- -n docs/flags.md" },
+  { cmd: "rg -n -- --agent-cmd docs" },
   { cmd: "grep -rn needle secrets" },
 
   // HOME points at the fixture while the battery runs, so ~ resolves to the repo root.

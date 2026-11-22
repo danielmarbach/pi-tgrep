@@ -536,6 +536,23 @@ async function runGlobOperandTests() {
   console.log("glob operand tests ok");
 }
 
+async function runEndOfOptionsTests() {
+  // `--` ends the options; dropping it would turn a dash-leading pattern into a tgrep flag.
+  await policyCase("grep -rIn -A4 -- '--agent-cmd' docs", "translate", {
+    action: "rewrite",
+    command: "tgrep search --hidden -n -A 4 -- --agent-cmd docs",
+  });
+  await policyCase('grep -nF -- "--allow-tool shell" .github/workflows/x.yml', "translate", {
+    action: "rewrite",
+    command: "tgrep search --hidden -n -F -- '--allow-tool shell' .github/workflows/x.yml",
+  });
+  await policyCase("rg -n -- -foo src", "translate", {
+    action: "rewrite",
+    command: "tgrep search -n -- -foo src",
+  });
+  console.log("end of options tests ok");
+}
+
 async function runEreBracketTests() {
   // A backslash inside an ERE bracket is literal in POSIX grep but an escape in tgrep, so these run as written.
   for (const command of [
@@ -712,4 +729,5 @@ await runReviewRegressionTests();
 await runKeywordPrefixTests();
 await runEreBracketTests();
 await runGlobOperandTests();
+await runEndOfOptionsTests();
 console.log("ALL BLOCK TESTS PASSED");

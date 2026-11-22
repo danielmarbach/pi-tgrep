@@ -940,6 +940,7 @@ function translateRg(tokens: Token[]): Translation | { error: string } {
     const t = tokens[i]!;
     if (t.text === "--") {
       const flagCount = out.length;
+      out.push({ text: "--" });
       for (const rest of tokens.slice(i + 1)) {
         out.push(passThrough(rest));
         positionals.push({ text: rest.text, quoted: rest.quoted });
@@ -997,6 +998,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
   const ePatterns: string[] = [];
   let patternFlag = false;
   let recursive = false;
+  let endOfOptions = false;
   let counting = false;
   let engine: GrepEngine = bin === "egrep" ? "ere" : bin === "fgrep" ? "fixed" : "bre";
   if (bin === "fgrep") out.push({ text: "-F" });
@@ -1004,6 +1006,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
   while (i < tokens.length) {
     const t = tokens[i]!;
     if (t.text === "--") {
+      endOfOptions = true;
       positionalTokens.push(...tokens.slice(i + 1));
       break;
     }
@@ -1092,6 +1095,7 @@ function translateGrep(bin: TranslatableGrepBinary, tokens: Token[]): Translatio
   const positionals = positionalTokens.map((p) => ({ text: p.text, quoted: p.quoted }));
   const patterns = patternFlag ? ePatterns : positionals.length > 0 ? [positionals[0]!.text] : [];
   const flagTokens = dedupeFlags(out);
+  if (endOfOptions) flagTokens.push({ text: "--" });
   for (const p of positionalTokens) flagTokens.push(passThrough(p));
   return { tokens: flagTokens, positionals, patternFlag, patterns, engine, recursive };
 }

@@ -52,6 +52,9 @@ pi-tgrep — what changed for them, not how it was implemented internally.
 - A translated `grep` or `rg` command that repeats a flag (`grep -n 'export MODEL=' -n SKILL.md`,
   `-i … -i`, `-A 1 -A 2`) no longer fails with tgrep's `cannot be used multiple times` error; a
   repeated flag with a value keeps its last value, as grep does.
+- A grep or rg that ends its options with `--` (`grep -nF -- "--allow-tool shell" file`) keeps the
+  `--` in its translation, so a pattern starting with a dash is searched for instead of failing as
+  an unknown tgrep flag.
 
 ## [0.5.0] - 2026-10-16
 
